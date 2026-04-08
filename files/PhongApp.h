@@ -7,11 +7,15 @@
 using namespace DirectX;
 using Microsoft::WRL::ComPtr;
 
-// ── Constant buffers ──────────────────────────────────────────────────────────
 struct CBPerObject
 {
     XMFLOAT4X4 World;
     XMFLOAT4X4 WorldInvTranspose;
+    XMFLOAT4   MatAmbient;
+    XMFLOAT4   MatDiffuse;
+    XMFLOAT4   MatSpecular; // .w = shininess
+    float      AnimEnabled; // 1.0 = вертексная анимация вкл
+    XMFLOAT3   ObjPad;
 };
 
 struct CBPerPass
@@ -21,12 +25,13 @@ struct CBPerPass
     XMFLOAT3   EyePosW;   float Pad0=0;
     XMFLOAT3   LightDir;  float Pad1=0;
     XMFLOAT4   LightAmbient, LightDiffuse, LightSpecular;
-    XMFLOAT4   MatAmbient, MatDiffuse, MatSpecular;
-    XMFLOAT2   TexScale;   // тайлинг
-    XMFLOAT2   TexOffset;  // UV-анимация
+    XMFLOAT4   MatAmbientPass, MatDiffusePass, MatSpecularPass;
+    XMFLOAT2   TexScale;
+    XMFLOAT2   TexOffset;
+    float      Time=0.f;
+    float      Pad2x=0, Pad2y=0, Pad2z=0;
 };
 
-// ── Vertex (Position + Normal + UV) ──────────────────────────────────────────
 struct Vertex
 {
     XMFLOAT3 Pos;
@@ -34,31 +39,28 @@ struct Vertex
     XMFLOAT2 TexCoord;
 };
 
-// ── OBJ Material ──────────────────────────────────────────────────────────────
 struct ObjMaterial
 {
     std::string Name;
     XMFLOAT4 Ambient  = {0.2f,0.2f,0.2f,1};
     XMFLOAT4 Diffuse  = {0.8f,0.8f,0.8f,1};
     XMFLOAT4 Specular = {1,1,1,32};
-    std::string DiffuseMap;
+    std::string DiffuseMap; // имя файла текстуры
 };
 
-// ── Render item ───────────────────────────────────────────────────────────────
 struct RenderItem
 {
     XMFLOAT4X4 World = MathHelper::Identity4x4();
     int   NumFramesDirty = 3;
     UINT  ObjCBIndex     = 0;
     MeshGeometry* Geo    = nullptr;
+    std::string   SubMesh;          // ключ в DrawArgs
+    std::string   TextureName;      // какую текстуру использовать
+    ObjMaterial   Mat;
     D3D12_PRIMITIVE_TOPOLOGY PrimitiveType = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-    UINT IndexCount=0, StartIndexLocation=0;
-    INT  BaseVertexLocation=0;
-    // материал OBJ
-    ObjMaterial Mat;
+    bool AnimEnabled = false; // вертексная анимация для этого объекта
 };
 
-// ── Frame resource ────────────────────────────────────────────────────────────
 struct FrameResource
 {
     FrameResource(ID3D12Device* d, UINT pass, UINT obj);
@@ -68,7 +70,6 @@ struct FrameResource
     UINT64 Fence=0;
 };
 
-// ── Main app ──────────────────────────────────────────────────────────────────
 class PhongApp : public D3DApp
 {
 public:
@@ -87,27 +88,26 @@ private:
     void BuildRootSignature();
     void BuildDescriptorHeaps();
     void BuildConstantBufferViews();
+    void BuildTextureViews();
     void BuildShadersAndInputLayout();
-    void BuildGeometry();
+    void BuildDefaultCube();
     void BuildPSO();
     void BuildFrameResources();
-    void BuildRenderItems();
 
-    // Текстура
-    void CreateProceduralTexture();   // шахматная, если нет файла
-    bool LoadTextureFromFile(const std::wstring& path);
-    void CreateTextureViews();
+    // Текстуры
+    bool LoadTexture(const std::string& name, const std::wstring& path);
+    void CreateProceduralTexture(const std::string& name);
 
     // OBJ+MTL
-    bool LoadObjModel(const std::string& objFile);
-    std::unordered_map<std::string, ObjMaterial> LoadMtlFile(const std::string& path);
+    bool LoadScene(const std::string& objFile);
+    std::unordered_map<std::string,ObjMaterial> LoadMtl(const std::string& path);
 
     void UpdateObjectCBs(const GameTimer& gt);
     void UpdatePassCB   (const GameTimer& gt);
     void DrawRenderItems(ID3D12GraphicsCommandList* cmd);
 
     // Camera
-    float mTheta=1.3f*XM_PI, mPhi=0.4f*XM_PI, mRadius=5.f;
+    float mTheta=1.3f*XM_PI, mPhi=0.4f*XM_PI, mRadius=8.f;
     POINT mLastMousePos{};
 
     // Frame resources
@@ -116,23 +116,26 @@ private:
     int mCurrFrameResourceIndex=0;
 
     // Pipeline
-    ComPtr<ID3D12DescriptorHeap> mCbvSrvHeap;  // CBV + SRV в одной куче
+    ComPtr<ID3D12DescriptorHeap> mCbvSrvHeap;
     ComPtr<ID3D12RootSignature>  mRootSignature;
     ComPtr<ID3D12PipelineState>  mPSO;
     ComPtr<ID3DBlob> mVsByteCode, mPsByteCode;
     std::vector<D3D12_INPUT_ELEMENT_DESC> mInputLayout;
 
-    // Texture
-    ComPtr<ID3D12Resource> mTexture, mTextureUpload;
-    UINT mSrvOffset = 0;   // индекс SRV в куче
+    // Текстуры: имя → ресурс
+    std::unordered_map<std::string, ComPtr<ID3D12Resource>> mTextures;
+    std::unordered_map<std::string, ComPtr<ID3D12Resource>> mTextureUploads;
+    std::unordered_map<std::string, UINT>                   mTextureSrvIndex;
+    std::string mFallbackTexName = "__checkerboard__";
 
-    // Geometry & render items
+    // Geometry & items
     std::unordered_map<std::string, std::unique_ptr<MeshGeometry>> mGeometries;
     std::vector<std::unique_ptr<RenderItem>> mAllRItems;
     std::vector<RenderItem*>                 mOpaqueRItems;
 
-    // Pass state
     CBPerPass mMainPassCB{};
-    UINT      mPassCbvOffset=0;
-    float     mUVOffset=0.f;   // UV-анимация
+    UINT      mPassCbvOffset = 0;
+    UINT      mSrvBaseOffset = 0;
+    float     mUVOffset = 0.f;
+    float     mTime     = 0.f;
 };
