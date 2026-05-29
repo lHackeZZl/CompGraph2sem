@@ -99,9 +99,10 @@ public:
                       const D3D12_RECT&            sr);
 
     // Root signatures (нужны PhongApp для биндинга своих CBV)
-    ID3D12RootSignature* GeometryRS()  const { return mGeometryRS.Get(); }
-    ID3D12RootSignature* LightingRS()  const { return mLightingRS.Get(); }
-    ID3D12PipelineState* GeometryPSO() const { return mGeometryPSO.Get(); }
+    ID3D12RootSignature* GeometryRS()      const { return mGeometryRS.Get(); }
+    ID3D12RootSignature* LightingRS()      const { return mLightingRS.Get(); }
+    ID3D12PipelineState* GeometryPSO()     const { return mGeometryPSO.Get(); }
+    ID3D12PipelineState* GeometryTessPSO() const { return mGeometryTessPSO.Get(); }
 
     // Upload buffers для lighting CB (по одному на frame resource)
     UploadBuffer<CBLighting>* LightingCB(int frameIndex)
@@ -142,6 +143,7 @@ private:
 
     // PSOs
     ComPtr<ID3D12PipelineState> mGeometryPSO;
+    ComPtr<ID3D12PipelineState> mGeometryTessPSO;
     ComPtr<ID3D12PipelineState> mLightingPSO;
 
     // Fullscreen quad geometry
@@ -156,6 +158,7 @@ private:
 
     // Shader bytecode
     ComPtr<ID3DBlob> mGeomVS, mGeomPS;
+    ComPtr<ID3DBlob> mGeomTessVS, mGeomHS, mGeomDS;
     ComPtr<ID3DBlob> mLightVS, mLightPS;
 
     // Input layout (shared with geometry pass)

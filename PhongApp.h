@@ -16,8 +16,14 @@ struct CBPerObject
     XMFLOAT4   MatAmbient;
     XMFLOAT4   MatDiffuse;
     XMFLOAT4   MatSpecular;   // .w = shininess
-    float      AnimEnabled;
-    XMFLOAT3   ObjPad;
+    float      AnimEnabled = 0.f;
+    float      UseNormalMap = 0.f;
+    float      UseDisplacementMap = 0.f;
+    float      DisplacementScale = 0.f;
+    float      TessNear = 2.f;
+    float      TessFar  = 18.f;
+    float      TessMin  = 1.f;
+    float      TessMax  = 16.f;
 };
 
 struct CBPerPass
@@ -46,6 +52,8 @@ struct ObjMaterial
     XMFLOAT4 Diffuse  = {0.8f,0.8f,0.8f,1};
     XMFLOAT4 Specular = {1,1,1,32};
     std::string DiffuseMap;
+    std::string NormalMap;
+    std::string DisplacementMap;
 };
 
 struct RenderItem
@@ -56,10 +64,20 @@ struct RenderItem
     MeshGeometry* Geo    = nullptr;
     std::string   SubMesh;
     std::string   TextureName;
+    std::string   NormalMapName;
+    std::string   DisplacementMapName;
     ObjMaterial   Mat;
     D3D12_PRIMITIVE_TOPOLOGY PrimitiveType = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
     bool AnimEnabled = false;
     bool Visible = true;
+    bool UseNormalMap = false;
+    bool UseDisplacementMap = false;
+    bool UseTessellation = false;
+    float DisplacementScale = 0.f;
+    float TessNear = 2.f;
+    float TessFar  = 18.f;
+    float TessMin  = 1.f;
+    float TessMax  = 16.f;
 };
 
 struct FrameResource
@@ -102,6 +120,8 @@ private:
                         DirectX::XMVECTOR& right, DirectX::XMVECTOR& up) const;
     void ShootPointLight();
     void BuildLightSphereObjects();
+    void CreateDefaultMaterialTextures();
+    void CreateSceneTessellationTextures();
     void BuildDescriptorHeaps();
     void BuildConstantBufferViews();
     void BuildTextureViews();
@@ -110,6 +130,7 @@ private:
     bool LoadTexture(const std::string& name, const std::wstring& path);
     void CreateProceduralTexture(const std::string& name);
     void CreateSolidTexture(const std::string& name, UINT rgba);
+    void CreateTextureFromPixels(const std::string& name, UINT width, UINT height, const std::vector<UINT>& pixels);
     bool LoadScene(const std::string& objFile);
     std::unordered_map<std::string,ObjMaterial> LoadMtl(const std::string& path);
     void BuildDefaultCube();
@@ -146,7 +167,7 @@ private:
     //   [n*3 .. n*3+2]       — pass   CBVs  (3 frames)
     //   [n*3+3 .. n*3+5]     — lighting CBVs(3 frames)
     //   [n*3+6 .. n*3+8]     — point light StructuredBuffer SRVs(3 frames)
-    //   [n*3+9 .. n*3+9+T-1] — texture SRVs (T textures)
+    //   [n*3+9 .. n*3+9+T-1] — material SRVs (diffuse / normal / displacement)
     //   [last 3]             — G-Buffer SRVs (Position, Normal, Albedo)
     ComPtr<ID3D12DescriptorHeap> mCbvSrvHeap;
     ComPtr<ID3D12DescriptorHeap> mGBufferRtvHeap; // RTV heap for G-Buffer
@@ -161,7 +182,13 @@ private:
     std::unordered_map<std::string, ComPtr<ID3D12Resource>> mTextures;
     std::unordered_map<std::string, ComPtr<ID3D12Resource>> mTextureUploads;
     std::unordered_map<std::string, UINT>                   mTextureSrvIndex;
-    std::string mFallbackTexName = "__checkerboard__";
+    std::string mFallbackTexName     = "__checkerboard__";
+    std::string mDefaultNormalName   = "__flat_normal__";
+    std::string mDefaultDisplaceName = "__neutral_displacement__";
+    std::string mWallNormalName      = "__wall_normal__";
+    std::string mWallDisplaceName    = "__wall_displacement__";
+    std::string mArtworkNormalName   = "__artwork_normal__";
+    std::string mArtworkDisplaceName = "__artwork_displacement__";
 
     // ── Geometry ──────────────────────────────────────────────────────────────
     std::unordered_map<std::string, std::unique_ptr<MeshGeometry>> mGeometries;

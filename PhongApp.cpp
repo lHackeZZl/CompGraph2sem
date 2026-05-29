@@ -6,6 +6,12 @@
 #include <wincodec.h>
 #pragma comment(lib,"windowscodecs.lib")
 
+static UINT PackRGBA(BYTE r, BYTE g, BYTE b, BYTE a = 255)
+{
+    // В памяти UINT хранится little-endian, поэтому порядок байтов будет R,G,B,A.
+    return (UINT(a) << 24) | (UINT(b) << 16) | (UINT(g) << 8) | UINT(r);
+}
+
 // ─── FrameResource ────────────────────────────────────────────────────────────
 FrameResource::FrameResource(ID3D12Device* d, UINT pass, UINT obj)
 {
@@ -46,9 +52,17 @@ bool PhongApp::Initialize()
     };
     for (auto& ri : mAllRItems)
         for (const auto& am : kAnimMats)
-            if (ri->SubMesh == am) { ri->AnimEnabled = true; ri->NumFramesDirty = 3; break; }
+            if (ri->Mat.Name == am || ri->SubMesh.find(am) != std::string::npos)
+            { ri->AnimEnabled = true; ri->NumFramesDirty = 3; break; }
 
-    if (mTextures.empty()) CreateProceduralTexture(mFallbackTexName);
+    // Дефолтные/процедурные карты нужны всем объектам:
+    // diffuse fallback, плоская normal map, нейтральная displacement map,
+    // а также procedural normal/displacement для стен и картины.
+    CreateDefaultMaterialTextures();
+    CreateSceneTessellationTextures();
+
+    // Центральный демонстрационный displaced quad убран: теперь тесселяция
+    // применяется только к объектам сцены — стенам и картине.
 
     // Создаём видимые объекты-источники света заранее: маленькие сферы,
     // которыми потом можно стрелять из камеры. Они входят в ObjectCB layout.
@@ -291,6 +305,13 @@ void PhongApp::UpdateObjectCBs(const GameTimer&)
         o.MatDiffuse  = e->Mat.Diffuse;
         o.MatSpecular = e->Mat.Specular;
         o.AnimEnabled = e->AnimEnabled ? 1.f : 0.f;
+        o.UseNormalMap = e->UseNormalMap ? 1.f : 0.f;
+        o.UseDisplacementMap = e->UseDisplacementMap ? 1.f : 0.f;
+        o.DisplacementScale = e->DisplacementScale;
+        o.TessNear = e->TessNear;
+        o.TessFar  = e->TessFar;
+        o.TessMin  = e->TessMin;
+        o.TessMax  = e->TessMax;
         cb->CopyData(e->ObjCBIndex, o);
         --e->NumFramesDirty;
     }
@@ -390,15 +411,26 @@ void PhongApp::DrawRenderItems(ID3D12GraphicsCommandList* cmd)
             mCurrFrameResourceIndex * n + ri->ObjCBIndex, mCbvSrvUavDescriptorSize);
         cmd->SetGraphicsRootDescriptorTable(0, objH);
 
-        // Texture SRV → slot 2
-        std::string texName = ri->TextureName;
-        if (!mTextureSrvIndex.count(texName)) texName = mFallbackTexName;
-        if (!mTextureSrvIndex.count(texName) && !mTextureSrvIndex.empty())
-            texName = mTextureSrvIndex.begin()->first;
-        UINT srvIdx = mTextureSrvIndex.count(texName) ? mTextureSrvIndex.at(texName) : 0;
-        auto srvH = CD3DX12_GPU_HANDLE(mCbvSrvHeap->GetGPUDescriptorHandleForHeapStart(),
-            mSrvBaseOffset + srvIdx, mCbvSrvUavDescriptorSize);
-        cmd->SetGraphicsRootDescriptorTable(2, srvH);
+        auto getSrvHandle = [&](const std::string& requested, const std::string& fallback)
+        {
+            std::string texName = requested;
+            if (!mTextureSrvIndex.count(texName)) texName = fallback;
+            if (!mTextureSrvIndex.count(texName) && !mTextureSrvIndex.empty())
+                texName = mTextureSrvIndex.begin()->first;
+            UINT srvIdx = mTextureSrvIndex.count(texName) ? mTextureSrvIndex.at(texName) : 0;
+            return CD3DX12_GPU_HANDLE(mCbvSrvHeap->GetGPUDescriptorHandleForHeapStart(),
+                mSrvBaseOffset + srvIdx, mCbvSrvUavDescriptorSize);
+        };
+
+        // Geometry RS slots:
+        // slot 2: diffuse t0, slot 3: normal map t1, slot 4: displacement t2.
+        cmd->SetGraphicsRootDescriptorTable(2, getSrvHandle(ri->TextureName, mFallbackTexName));
+        cmd->SetGraphicsRootDescriptorTable(3, getSrvHandle(ri->NormalMapName, mDefaultNormalName));
+        cmd->SetGraphicsRootDescriptorTable(4, getSrvHandle(ri->DisplacementMapName, mDefaultDisplaceName));
+
+        cmd->SetPipelineState(ri->UseTessellation
+            ? mRenderer.GeometryTessPSO()
+            : mRenderer.GeometryPSO());
 
         auto vbv = ri->Geo->VertexBufferView();
         auto ibv = ri->Geo->IndexBufferView();
@@ -583,6 +615,170 @@ void PhongApp::CreateSolidTexture(const std::string& name, UINT rgba)
     mTextureUploads[name] = upload;
 }
 
+
+void PhongApp::CreateTextureFromPixels(const std::string& name, UINT W, UINT H,
+                                       const std::vector<UINT>& pixels)
+{
+    if (mTextures.count(name)) return;
+    if (pixels.size() < (size_t)W * H) return;
+
+    D3D12_RESOURCE_DESC td = {};
+    td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    td.Width = W;
+    td.Height = H;
+    td.DepthOrArraySize = 1;
+    td.MipLevels = 1;
+    td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    td.SampleDesc.Count = 1;
+    td.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+
+    auto defHeap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+    ComPtr<ID3D12Resource> tex, upload;
+    ThrowIfFailed(md3dDevice->CreateCommittedResource(&defHeap, D3D12_HEAP_FLAG_NONE,
+        &td, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&tex)));
+
+    UINT64 uploadSize = 0;
+    md3dDevice->GetCopyableFootprints(&td, 0, 1, 0, nullptr, nullptr, nullptr, &uploadSize);
+    auto uplHeap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
+    auto uplDesc = CD3DX12_RESOURCE_DESC_BUFFER(uploadSize);
+    ThrowIfFailed(md3dDevice->CreateCommittedResource(&uplHeap, D3D12_HEAP_FLAG_NONE,
+        &uplDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&upload)));
+
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT layout;
+    UINT numRows; UINT64 rowSize;
+    md3dDevice->GetCopyableFootprints(&td, 0, 1, 0, &layout, &numRows, &rowSize, nullptr);
+
+    BYTE* mapped = nullptr;
+    upload->Map(0, nullptr, (void**)&mapped);
+    for (UINT r = 0; r < numRows; ++r)
+        memcpy(mapped + layout.Offset + r * layout.Footprint.RowPitch,
+               (BYTE*)pixels.data() + r * W * 4, rowSize);
+    upload->Unmap(0, nullptr);
+
+    D3D12_TEXTURE_COPY_LOCATION dst = { tex.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX };
+    D3D12_TEXTURE_COPY_LOCATION src = { upload.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT };
+    src.PlacedFootprint = layout;
+    mCommandList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+
+    auto b = CD3DX12_RESOURCE_BARRIER_TRANSITION(tex.Get(),
+        D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    mCommandList->ResourceBarrier(1, &b);
+
+    mTextures[name] = tex;
+    mTextureUploads[name] = upload;
+}
+
+void PhongApp::CreateDefaultMaterialTextures()
+{
+    if (!mTextures.count(mFallbackTexName))
+        CreateProceduralTexture(mFallbackTexName);
+
+    // tangent-space normal (0.5, 0.5, 1.0) = плоская normal map
+    CreateSolidTexture(mDefaultNormalName, PackRGBA(128, 128, 255, 255));
+
+    // 0.5 = нейтральная высота, displacement не двигает поверхность
+    CreateSolidTexture(mDefaultDisplaceName, PackRGBA(128, 128, 128, 255));
+}
+
+void PhongApp::CreateSceneTessellationTextures()
+{
+    // Эти карты не лежат в .mtl. Они создаются процедурно и назначаются
+    // только нужным RenderItem: четырём стенам и картине.
+    const UINT W = 256, H = 256;
+
+    auto buildMaps = [&](const std::string& normalName,
+                         const std::string& heightName,
+                         bool canvasPattern)
+    {
+        if (mTextures.count(normalName) && mTextures.count(heightName))
+            return;
+
+        std::vector<float> height(W * H);
+        std::vector<UINT> normal(W * H), displacement(W * H);
+
+        auto hAt = [&](int x, int y) -> float
+        {
+            x = (x + (int)W) % (int)W;
+            y = (y + (int)H) % (int)H;
+            return height[(size_t)y * W + x];
+        };
+
+        for (UINT y = 0; y < H; ++y)
+        {
+            for (UINT x = 0; x < W; ++x)
+            {
+                float u = (float)x / (float)(W - 1);
+                float v = (float)y / (float)(H - 1);
+                float h = 0.5f;
+
+                if (canvasPattern)
+                {
+                    // Картина: крупный рельеф холста + заметные мазки.
+                    // Раньше карта была слишком мелкой: при приближении она
+                    // выглядела как normal map. Теперь в height map есть
+                    // низкочастотный геометрический рельеф.
+                    float weaveU = 0.5f + 0.5f * sinf(u * 32.0f * MathHelper::Pi);
+                    float weaveV = 0.5f + 0.5f * sinf(v * 28.0f * MathHelper::Pi);
+                    float brush1 = 0.5f + 0.5f * sinf((u * 7.0f + v * 2.0f) * MathHelper::Pi);
+                    float brush2 = 0.5f + 0.5f * cosf((u * 3.0f - v * 9.0f) * MathHelper::Pi);
+                    float borderU = std::min(u, 1.0f - u);
+                    float borderV = std::min(v, 1.0f - v);
+                    float frameDip = (borderU < 0.045f || borderV < 0.045f) ? -0.28f : 0.0f;
+                    h = 0.38f + 0.18f * weaveU + 0.18f * weaveV
+                             + 0.22f * brush1 + 0.12f * brush2 + frameDip;
+                }
+                else
+                {
+                    // Стены: крупные выпуклые блоки/плитки с глубокими швами.
+                    // Такой рисунок хорошо виден именно как displacement.
+                    float cellsU = 5.0f;
+                    float cellsV = 4.0f;
+                    float cu = fmodf(u * cellsU, 1.0f);
+                    float cv = fmodf(v * cellsV, 1.0f);
+                    float distU = std::min(cu, 1.0f - cu);
+                    float distV = std::min(cv, 1.0f - cv);
+                    float edgeDist = std::min(distU, distV);
+                    float groove = MathHelper::Clamp((edgeDist - 0.025f) / 0.075f, 0.0f, 1.0f);
+                    float pillow = sinf(cu * MathHelper::Pi) * sinf(cv * MathHelper::Pi);
+                    float plaster = 0.5f + 0.5f * sinf((u * 13.0f + v * 7.0f) * MathHelper::Pi);
+                    h = 0.18f + 0.46f * groove + 0.28f * pillow + 0.08f * plaster;
+                }
+
+                height[(size_t)y * W + x] = MathHelper::Clamp(h, 0.0f, 1.0f);
+            }
+        }
+
+        for (UINT y = 0; y < H; ++y)
+        {
+            for (UINT x = 0; x < W; ++x)
+            {
+                float h   = height[(size_t)y * W + x];
+                float dhx = hAt((int)x + 1, (int)y) - hAt((int)x - 1, (int)y);
+                float dhy = hAt((int)x, (int)y + 1) - hAt((int)x, (int)y - 1);
+                float bumpStrength = canvasPattern ? 16.0f : 18.0f;
+
+                XMVECTOR n = XMVector3Normalize(
+                    XMVectorSet(-dhx * bumpStrength, -dhy * bumpStrength, 1.0f, 0.0f));
+                XMFLOAT3 nf; XMStoreFloat3(&nf, n);
+
+                BYTE hr = (BYTE)MathHelper::Clamp((int)(h * 255.0f), 0, 255);
+                displacement[(size_t)y * W + x] = PackRGBA(hr, hr, hr, 255);
+
+                BYTE nr = (BYTE)MathHelper::Clamp((int)((nf.x * 0.5f + 0.5f) * 255.0f), 0, 255);
+                BYTE ng = (BYTE)MathHelper::Clamp((int)((nf.y * 0.5f + 0.5f) * 255.0f), 0, 255);
+                BYTE nb = (BYTE)MathHelper::Clamp((int)((nf.z * 0.5f + 0.5f) * 255.0f), 0, 255);
+                normal[(size_t)y * W + x] = PackRGBA(nr, ng, nb, 255);
+            }
+        }
+
+        CreateTextureFromPixels(normalName, W, H, normal);
+        CreateTextureFromPixels(heightName, W, H, displacement);
+    };
+
+    buildMaps(mWallNormalName,    mWallDisplaceName,    false);
+    buildMaps(mArtworkNormalName, mArtworkDisplaceName, true);
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // MTL loader
 // ════════════════════════════════════════════════════════════════════════════
@@ -601,6 +797,12 @@ PhongApp::LoadMtl(const std::string& path)
             else if (tok=="Kd"){ ss>>cur->Diffuse.x>>cur->Diffuse.y>>cur->Diffuse.z; }
             else if (tok=="Ks"){ ss>>cur->Specular.x>>cur->Specular.y>>cur->Specular.z; }
             else if (tok=="Ns"){ ss>>cur->Specular.w; }
+            else if (tok=="norm" || tok=="map_Bump" || tok=="bump" || tok=="map_Kn"){
+                ss >> cur->NormalMap;
+            }
+            else if (tok=="disp" || tok=="map_disp" || tok=="map_Displacement"){
+                ss >> cur->DisplacementMap;
+            }
             else if (tok=="map_Kd"){
                 ss>>cur->DiffuseMap;
                 // Если Kd=(0,0,0) но есть текстура — ставим белый,
@@ -629,21 +831,52 @@ bool PhongApp::LoadScene(const std::string& objFile)
     std::vector<XMFLOAT3> pos,nrm;
     std::vector<XMFLOAT2> uvs;
 
-    struct MatGroup { ObjMaterial mat; std::vector<Vertex> verts; std::vector<uint32_t> idx; };
+    struct MatGroup
+    {
+        ObjMaterial mat;
+        std::string objectName;
+        std::string materialName;
+        std::vector<Vertex> verts;
+        std::vector<uint32_t> idx;
+    };
+
     std::unordered_map<std::string,MatGroup> groups;
     std::unordered_map<std::string,ObjMaterial> mats;
-    std::string curMat="__default__"; groups[curMat]={};
+    std::string curObj="__root__";
+    std::string curMat="__default__";
+
+    auto makeKey = [&]()
+    {
+        return curObj + "|" + curMat;
+    };
+
+    auto ensureGroup = [&]() -> MatGroup&
+    {
+        std::string key = makeKey();
+        if (!groups.count(key))
+        {
+            groups[key] = {};
+            groups[key].objectName = curObj;
+            groups[key].materialName = curMat;
+            if (mats.count(curMat)) groups[key].mat = mats[curMat];
+            groups[key].mat.Name = curMat;
+        }
+        return groups[key];
+    };
+
+    ensureGroup();
 
     std::string line;
     while (std::getline(f,line)) {
         std::istringstream ss(line); std::string tok; ss>>tok;
-        if      (tok=="v") { XMFLOAT3 p; ss>>p.x>>p.y>>p.z; pos.push_back(p); }
+        if      (tok=="o" || tok=="g") { ss >> curObj; if (curObj.empty()) curObj = "__root__"; }
+        else if (tok=="v") { XMFLOAT3 p; ss>>p.x>>p.y>>p.z; pos.push_back(p); }
         else if (tok=="vn"){ XMFLOAT3 n; ss>>n.x>>n.y>>n.z; nrm.push_back(n); }
         else if (tok=="vt"){ XMFLOAT2 u; ss>>u.x>>u.y; u.y=1.f-u.y; uvs.push_back(u); }
         else if (tok=="mtllib"){ std::string mf; ss>>mf; mats=LoadMtl(dir+mf); }
         else if (tok=="usemtl"){
             ss>>curMat;
-            if (!groups.count(curMat)){ groups[curMat]={}; if(mats.count(curMat)) groups[curMat].mat=mats[curMat]; }
+            ensureGroup();
         }
         else if (tok=="f"){
             std::vector<std::tuple<int,int,int>> face;
@@ -659,7 +892,7 @@ bool PhongApp::LoadScene(const std::string& objFile)
                 }
                 face.push_back({vi,ti,ni});
             }
-            auto& g=groups[curMat];
+            auto& g=ensureGroup();
             for (size_t i=1;i+1<face.size();++i)
                 for (auto fv:{face[0],face[i],face[i+1]}){
                     Vertex vtx{};
@@ -677,30 +910,80 @@ bool PhongApp::LoadScene(const std::string& objFile)
     auto geo=std::make_unique<MeshGeometry>(); geo->Name="sceneGeo";
     std::vector<Vertex> allVerts; std::vector<uint32_t> allIdx;
 
-    for (auto& [matName,g]:groups){
+    for (auto& [groupName,g]:groups){
         if (g.verts.empty()) continue;
         SubmeshGeometry sub;
         sub.IndexCount=(UINT)g.idx.size();
         sub.StartIndexLocation=(UINT)allIdx.size();
         sub.BaseVertexLocation=(INT)allVerts.size();
-        geo->DrawArgs[matName]=sub;
+        geo->DrawArgs[groupName]=sub;
         for (auto& v:g.verts) allVerts.push_back(v);
         for (auto  i:g.idx)   allIdx.push_back(i);
 
-        std::string texName=mFallbackTexName;
-        if (!g.mat.DiffuseMap.empty()){
-            texName=g.mat.DiffuseMap;
+        auto loadMaterialTexture = [&](const std::string& mapName, const std::string& fallback)
+        {
+            if (mapName.empty()) return fallback;
+            std::string texName = mapName;
             if (!mTextures.count(texName)){
                 std::wstring wp(dir.begin(),dir.end());
-                std::wstring wn(g.mat.DiffuseMap.begin(),g.mat.DiffuseMap.end());
-                if (!LoadTexture(texName,wp+wn)) texName=mFallbackTexName;
+                std::wstring wn(mapName.begin(),mapName.end());
+                if (!LoadTexture(texName,wp+wn)) texName=fallback;
             }
-        }
+            return texName;
+        };
+
+        std::string texName  = loadMaterialTexture(g.mat.DiffuseMap,      mFallbackTexName);
+        std::string normName = loadMaterialTexture(g.mat.NormalMap,       mDefaultNormalName);
+        std::string dispName = loadMaterialTexture(g.mat.DisplacementMap, mDefaultDisplaceName);
+
+        const bool isWall = g.objectName.find("breakfast_room_Wall_") != std::string::npos;
+        const bool isArtwork = (g.materialName == "breakfast_room:Artwork") ||
+                               (g.objectName.find("wall_art") != std::string::npos);
+
         auto ri=std::make_unique<RenderItem>();
         XMStoreFloat4x4(&ri->World,XMMatrixIdentity());
-        ri->ObjCBIndex=( UINT)mAllRItems.size();
-        ri->Geo=geo.get(); ri->SubMesh=matName;
-        ri->TextureName=texName; ri->Mat=g.mat;
+        ri->ObjCBIndex=(UINT)mAllRItems.size();
+        ri->Geo=geo.get(); ri->SubMesh=groupName;
+        ri->TextureName=texName;
+        ri->NormalMapName=normName;
+        ri->DisplacementMapName=dispName;
+        ri->UseNormalMap = !g.mat.NormalMap.empty() && normName != mDefaultNormalName;
+        ri->UseDisplacementMap = !g.mat.DisplacementMap.empty() && dispName != mDefaultDisplaceName;
+        ri->Mat=g.mat;
+
+        if (isWall)
+        {
+            ri->NormalMapName       = mWallNormalName;
+            ri->DisplacementMapName = mWallDisplaceName;
+            ri->UseNormalMap        = true;
+            ri->UseDisplacementMap  = true;
+            ri->UseTessellation     = true;
+            ri->PrimitiveType       = D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST;
+            // Стены большие и плоские, поэтому displacement нужен заметнее.
+            // TessMin > 1 оставляет рельеф читаемым и на средней/дальней дистанции.
+            ri->DisplacementScale   = 0.34f;
+            ri->TessNear            = 0.6f;
+            ri->TessFar             = 18.0f;
+            ri->TessMin             = 4.0f;
+            ri->TessMax             = 32.0f;
+        }
+        else if (isArtwork)
+        {
+            ri->NormalMapName       = mArtworkNormalName;
+            ri->DisplacementMapName = mArtworkDisplaceName;
+            ri->UseNormalMap        = true;
+            ri->UseDisplacementMap  = true;
+            ri->UseTessellation     = true;
+            ri->PrimitiveType       = D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST;
+            // Для картины рельеф меньше, чем на стенах, но достаточно крупный,
+            // чтобы не исчезать при приближении камеры.
+            ri->DisplacementScale   = 0.13f;
+            ri->TessNear            = 0.4f;
+            ri->TessFar             = 14.0f;
+            ri->TessMin             = 4.0f;
+            ri->TessMax             = 32.0f;
+        }
+
         mOpaqueRItems.push_back(ri.get());
         mAllRItems.push_back(std::move(ri));
     }

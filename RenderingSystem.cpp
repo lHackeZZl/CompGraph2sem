@@ -109,6 +109,8 @@ void RenderingSystem::BuildRootSignatures(ID3D12Device* device)
     // slot 0 : CBV table (b0) — per-object
     // slot 1 : CBV table (b1) — per-pass
     // slot 2 : SRV table (t0) — diffuse texture
+    // slot 3 : SRV table (t1) — normal map
+    // slot 4 : SRV table (t2) — displacement/height map
     {
         D3D12_DESCRIPTOR_RANGE r0 =
             CD3DX12_DESCRIPTOR_RANGE(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 0);
@@ -116,11 +118,17 @@ void RenderingSystem::BuildRootSignatures(ID3D12Device* device)
             CD3DX12_DESCRIPTOR_RANGE(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 1);
         D3D12_DESCRIPTOR_RANGE r2 =
             CD3DX12_DESCRIPTOR_RANGE(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0);
+        D3D12_DESCRIPTOR_RANGE r3 =
+            CD3DX12_DESCRIPTOR_RANGE(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 1);
+        D3D12_DESCRIPTOR_RANGE r4 =
+            CD3DX12_DESCRIPTOR_RANGE(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 2);
 
-        D3D12_ROOT_PARAMETER p[3];
+        D3D12_ROOT_PARAMETER p[5];
         p[0] = CD3DX12_ROOT_PARAMETER_TABLE(1, &r0);
         p[1] = CD3DX12_ROOT_PARAMETER_TABLE(1, &r1);
         p[2] = CD3DX12_ROOT_PARAMETER_TABLE(1, &r2, D3D12_SHADER_VISIBILITY_PIXEL);
+        p[3] = CD3DX12_ROOT_PARAMETER_TABLE(1, &r3, D3D12_SHADER_VISIBILITY_PIXEL);
+        p[4] = CD3DX12_ROOT_PARAMETER_TABLE(1, &r4, D3D12_SHADER_VISIBILITY_ALL);
 
         D3D12_STATIC_SAMPLER_DESC samp = {};
         samp.Filter   = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
@@ -128,10 +136,10 @@ void RenderingSystem::BuildRootSignatures(ID3D12Device* device)
             D3D12_TEXTURE_ADDRESS_MODE_WRAP;
         samp.MaxLOD           = D3D12_FLOAT32_MAX;
         samp.ComparisonFunc   = D3D12_COMPARISON_FUNC_ALWAYS;
-        samp.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        samp.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
         D3D12_ROOT_SIGNATURE_DESC desc = {};
-        desc.NumParameters     = 3;
+        desc.NumParameters     = 5;
         desc.pParameters       = p;
         desc.NumStaticSamplers = 1;
         desc.pStaticSamplers   = &samp;
@@ -195,10 +203,13 @@ void RenderingSystem::BuildPSOs(ID3D12Device* device,
                                 DXGI_FORMAT   backFmt,
                                 DXGI_FORMAT   depthFmt)
 {
-    mGeomVS  = d3dUtil::CompileShader(L"gbuffer.hlsl",  nullptr, "VS", "vs_5_1");
-    mGeomPS  = d3dUtil::CompileShader(L"gbuffer.hlsl",  nullptr, "PS", "ps_5_1");
-    mLightVS = d3dUtil::CompileShader(L"lighting.hlsl", nullptr, "VS", "vs_5_1");
-    mLightPS = d3dUtil::CompileShader(L"lighting.hlsl", nullptr, "PS", "ps_5_1");
+    mGeomVS     = d3dUtil::CompileShader(L"gbuffer.hlsl",  nullptr, "VS",     "vs_5_1");
+    mGeomTessVS = d3dUtil::CompileShader(L"gbuffer.hlsl",  nullptr, "VSTess", "vs_5_1");
+    mGeomHS     = d3dUtil::CompileShader(L"gbuffer.hlsl",  nullptr, "HS",     "hs_5_1");
+    mGeomDS     = d3dUtil::CompileShader(L"gbuffer.hlsl",  nullptr, "DS",     "ds_5_1");
+    mGeomPS     = d3dUtil::CompileShader(L"gbuffer.hlsl",  nullptr, "PS",     "ps_5_1");
+    mLightVS    = d3dUtil::CompileShader(L"lighting.hlsl", nullptr, "VS",     "vs_5_1");
+    mLightPS    = d3dUtil::CompileShader(L"lighting.hlsl", nullptr, "PS",     "ps_5_1");
 
     mInputLayout = {
         {"POSITION",0,DXGI_FORMAT_R32G32B32_FLOAT,0, 0,
@@ -231,6 +242,32 @@ void RenderingSystem::BuildPSOs(ID3D12Device* device,
         d.DSVFormat        = depthFmt;
         ThrowIfFailed(device->CreateGraphicsPipelineState(
             &d, IID_PPV_ARGS(&mGeometryPSO)));
+    }
+
+    // ── Geometry Tessellation PSO ─────────────────────────────────────────────
+    {
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC d = {};
+        d.InputLayout    = { mInputLayout.data(), (UINT)mInputLayout.size() };
+        d.pRootSignature = mGeometryRS.Get();
+        d.VS = { mGeomTessVS->GetBufferPointer(), mGeomTessVS->GetBufferSize() };
+        d.HS = { mGeomHS->GetBufferPointer(),     mGeomHS->GetBufferSize() };
+        d.DS = { mGeomDS->GetBufferPointer(),     mGeomDS->GetBufferSize() };
+        d.PS = { mGeomPS->GetBufferPointer(),     mGeomPS->GetBufferSize() };
+
+        D3D12_RASTERIZER_DESC rast = CD3DX12_RASTERIZER_DESC_DEFAULT();
+        rast.CullMode = D3D12_CULL_MODE_NONE;
+        d.RasterizerState   = rast;
+        d.BlendState        = CD3DX12_BLEND_DESC_DEFAULT();
+        d.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC_DEFAULT();
+        d.SampleMask        = UINT_MAX;
+        d.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_PATCH;
+        d.NumRenderTargets  = kGBufferCount;
+        for (UINT i = 0; i < kGBufferCount; ++i)
+            d.RTVFormats[i] = kGBufferFormats[i];
+        d.SampleDesc.Count = 1;
+        d.DSVFormat        = depthFmt;
+        ThrowIfFailed(device->CreateGraphicsPipelineState(
+            &d, IID_PPV_ARGS(&mGeometryTessPSO)));
     }
 
     // ── Lighting PSO (fullscreen quad, no depth) ───────────────────────────

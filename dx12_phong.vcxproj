@@ -43,7 +43,7 @@
       <AdditionalDependencies>d3d12.lib;dxgi.lib;d3dcompiler.lib;dxguid.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <PostBuildEvent>
-      <Command>xcopy /Y "$(ProjectDir)phong.hlsl" "$(OutDir)"</Command>
+      <Command>xcopy /Y "$(ProjectDir)phong.hlsl" "$(OutDir)"&#x0D;&#x0A;xcopy /Y "$(ProjectDir)gbuffer.hlsl" "$(OutDir)"&#x0D;&#x0A;xcopy /Y "$(ProjectDir)lighting.hlsl" "$(OutDir)"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -58,7 +58,7 @@
       <AdditionalDependencies>d3d12.lib;dxgi.lib;d3dcompiler.lib;dxguid.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <PostBuildEvent>
-      <Command>xcopy /Y "$(ProjectDir)phong.hlsl" "$(OutDir)"</Command>
+      <Command>xcopy /Y "$(ProjectDir)phong.hlsl" "$(OutDir)"&#x0D;&#x0A;xcopy /Y "$(ProjectDir)gbuffer.hlsl" "$(OutDir)"&#x0D;&#x0A;xcopy /Y "$(ProjectDir)lighting.hlsl" "$(OutDir)"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <!-- .cpp files -->
@@ -84,6 +84,8 @@
   <!-- Shader -->
   <ItemGroup>
     <None Include="phong.hlsl" />
+    <None Include="gbuffer.hlsl" />
+    <None Include="lighting.hlsl" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>
