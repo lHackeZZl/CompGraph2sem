@@ -50,14 +50,18 @@ bool PhongApp::Initialize()
 
     if (mTextures.empty()) CreateProceduralTexture(mFallbackTexName);
 
+    // Создаём видимые объекты-источники света заранее: маленькие сферы,
+    // которыми потом можно стрелять из камеры. Они входят в ObjectCB layout.
+    BuildLightSphereObjects();
+
     BuildFrameResources();
     BuildDescriptorHeaps();         // создаёт mCbvSrvHeap и mGBufferRtvHeap
     BuildConstantBufferViews();     // obj CBVs + pass CBVs
 
     // Lighting CBVs строит RenderingSystem через наш heap
-    mRenderer.BuildLightingCBVs(
+    mRenderer.BuildLightingViews(
         md3dDevice.Get(), mCbvSrvHeap.Get(),
-        mLightCbvOffset, mCbvSrvUavDescriptorSize);
+        mLightCbvOffset, mPointLightSrvOffset, mCbvSrvUavDescriptorSize);
 
     BuildTextureViews();
 
@@ -86,35 +90,53 @@ void PhongApp::SetupLights()
     // Y: [-1.74 .. 8.11] пол=-1.74, потолок=8.11
     // Z: [-4.77 .. 10.16] центр Z = 2.7
 
+    mLightObjects.clear();
+    mPointLights.clear();
+
     // Directional — слабый нейтральный
     mLightingData.DirLight.Direction = { 0.3f, -1.0f, 0.3f };
     mLightingData.DirLight.Ambient   = { 0.20f, 0.20f, 0.20f, 1.f };
     mLightingData.DirLight.Diffuse   = { 0.25f, 0.25f, 0.25f, 1.f };
     mLightingData.DirLight.Specular  = { 0.2f,  0.2f,  0.2f,  1.f };
 
+    auto addStaticPointLight = [&](const PointLight& L)
+    {
+        LightObject obj{};
+        obj.Light  = L;
+        obj.Active = true;
+        obj.Moving = false;
+        mLightObjects.push_back(obj);
+        mPointLights.push_back(L);
+    };
+
+    PointLight L{};
+
     // Point 0 — оранжево-красный, левая часть потолка
-    mLightingData.PointLights[0].Position    = { -3.0f, 7.5f,  2.7f };
-    mLightingData.PointLights[0].Range       = 200.f;
-    mLightingData.PointLights[0].Ambient     = { 0.18f, 0.04f, 0.00f, 1.f };
-    mLightingData.PointLights[0].Diffuse     = { 1.0f,  0.25f, 0.00f, 1.f };
-    mLightingData.PointLights[0].Specular    = { 1.0f,  0.30f, 0.00f, 1.f };
-    mLightingData.PointLights[0].Attenuation = { 1.f, 0.007f, 0.0002f };
+    L.Position    = { -3.0f, 7.5f,  2.7f };
+    L.Range       = 200.f;
+    L.Ambient     = { 0.18f, 0.04f, 0.00f, 1.f };
+    L.Diffuse     = { 1.0f,  0.25f, 0.00f, 1.f };
+    L.Specular    = { 1.0f,  0.30f, 0.00f, 1.f };
+    L.Attenuation = { 1.f, 0.007f, 0.0002f };
+    addStaticPointLight(L);
 
     // Point 1 — синий, правая часть потолка
-    mLightingData.PointLights[1].Position    = {  2.0f, 7.5f,  2.7f };
-    mLightingData.PointLights[1].Range       = 200.f;
-    mLightingData.PointLights[1].Ambient     = { 0.00f, 0.03f, 0.18f, 1.f };
-    mLightingData.PointLights[1].Diffuse     = { 0.00f, 0.30f, 1.0f,  1.f };
-    mLightingData.PointLights[1].Specular    = { 0.00f, 0.35f, 1.0f,  1.f };
-    mLightingData.PointLights[1].Attenuation = { 1.f, 0.007f, 0.0002f };
+    L.Position    = {  2.0f, 7.5f,  2.7f };
+    L.Range       = 200.f;
+    L.Ambient     = { 0.00f, 0.03f, 0.18f, 1.f };
+    L.Diffuse     = { 0.00f, 0.30f, 1.0f,  1.f };
+    L.Specular    = { 0.00f, 0.35f, 1.0f,  1.f };
+    L.Attenuation = { 1.f, 0.007f, 0.0002f };
+    addStaticPointLight(L);
 
     // Point 2 — зелёный, центр потолка
-    mLightingData.PointLights[2].Position    = { -0.6f, 7.8f,  2.7f };
-    mLightingData.PointLights[2].Range       = 200.f;
-    mLightingData.PointLights[2].Ambient     = { 0.00f, 0.12f, 0.00f, 1.f };
-    mLightingData.PointLights[2].Diffuse     = { 0.00f, 1.00f, 0.10f, 1.f };
-    mLightingData.PointLights[2].Specular    = { 0.00f, 1.00f, 0.15f, 1.f };
-    mLightingData.PointLights[2].Attenuation = { 1.f, 0.005f, 0.0001f };
+    L.Position    = { -0.6f, 7.8f,  2.7f };
+    L.Range       = 200.f;
+    L.Ambient     = { 0.00f, 0.12f, 0.00f, 1.f };
+    L.Diffuse     = { 0.00f, 1.00f, 0.10f, 1.f };
+    L.Specular    = { 0.00f, 1.00f, 0.15f, 1.f };
+    L.Attenuation = { 1.f, 0.005f, 0.0001f };
+    addStaticPointLight(L);
 
     // Spot — пурпурный, направлен вниз над центром стола
     mLightingData.Spot.Position    = { -0.6f, 7.5f,  2.7f };
@@ -126,7 +148,7 @@ void PhongApp::SetupLights()
     mLightingData.Spot.Specular    = { 1.00f, 0.10f, 1.00f, 1.f };
     mLightingData.Spot.Attenuation = { 1.f, 0.007f, 0.0002f };
 
-    mLightingData.NumPointLights = 3;
+    mLightingData.NumPointLights = (int)mPointLights.size();
     mLightingData.HasSpot        = 1;
 }
 
@@ -140,7 +162,8 @@ void PhongApp::BuildDescriptorHeaps()
 
     mPassCbvOffset  = n * 3;
     mLightCbvOffset = mPassCbvOffset + 3;
-    mSrvBaseOffset  = mLightCbvOffset + 3;
+    mPointLightSrvOffset = mLightCbvOffset + 3;
+    mSrvBaseOffset  = mPointLightSrvOffset + 3;
     mGBufSrvOffset  = mSrvBaseOffset + texN;
 
     UINT total = mGBufSrvOffset + kGBufferCount;
@@ -245,11 +268,13 @@ void PhongApp::Update(const GameTimer& gt)
         CloseHandle(ev);
     }
     mTime += gt.DeltaTime();
+    UpdateCamera(gt);
+    UpdateLightObjects(gt);
     UpdateObjectCBs(gt);
     UpdatePassCB(gt);
 
     // Обновляем lighting CB через RenderingSystem
-    mRenderer.UpdateLightingCB(mCurrFrameResourceIndex, mLightingData);
+    mRenderer.UpdateLightingData(mCurrFrameResourceIndex, mLightingData, mPointLights);
 }
 
 void PhongApp::UpdateObjectCBs(const GameTimer&)
@@ -273,11 +298,10 @@ void PhongApp::UpdateObjectCBs(const GameTimer&)
 
 void PhongApp::UpdatePassCB(const GameTimer&)
 {
-    float x = mRadius * sinf(mPhi) * cosf(mTheta);
-    float y = mRadius * cosf(mPhi);
-    float z = mRadius * sinf(mPhi) * sinf(mTheta);
-    XMVECTOR eye  = XMVectorSet(x, y, z, 1.f);
-    XMMATRIX view = XMMatrixLookAtLH(eye, XMVectorZero(), XMVectorSet(0,1,0,0));
+    XMVECTOR eye, forward, right, up;
+    GetCameraBasis(eye, forward, right, up);
+
+    XMMATRIX view = XMMatrixLookToLH(eye, forward, up);
     XMMATRIX proj = XMLoadFloat4x4(&mProj);
 
     CBPerPass p{};
@@ -290,8 +314,8 @@ void PhongApp::UpdatePassCB(const GameTimer&)
     p.Time      = mTime;
     mCurrFrameResource->PassCB->CopyData(0, p);
 
-    // Обновляем EyePosW в lighting data
     XMStoreFloat3(&mLightingData.EyePosW, eye);
+    mLightingData.NumPointLights = (int)mPointLights.size();
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -329,10 +353,13 @@ void PhongApp::Draw(const GameTimer&)
     auto lightH = CD3DX12_GPU_HANDLE(mCbvSrvHeap->GetGPUDescriptorHandleForHeapStart(),
         mLightCbvOffset + mCurrFrameResourceIndex, mCbvSrvUavDescriptorSize);
 
+    auto pointLightsH = mRenderer.PointLightsSrvGpuHandle(
+        mCbvSrvHeap.Get(), mCurrFrameResourceIndex, mCbvSrvUavDescriptorSize);
+
     mRenderer.LightingPass(
         mCommandList.Get(),
         CurrentBackBufferView(),
-        lightH,
+        lightH, pointLightsH,
         mScreenViewport, mScissorRect);
 
     auto b2 = CD3DX12_RESOURCE_BARRIER_TRANSITION(CurrentBackBuffer(),
@@ -356,6 +383,8 @@ void PhongApp::DrawRenderItems(ID3D12GraphicsCommandList* cmd)
     UINT n = (UINT)mAllRItems.size();
     for (auto* ri : mOpaqueRItems)
     {
+        if (!ri->Visible) continue;
+
         // Per-object CBV → slot 0
         auto objH = CD3DX12_GPU_HANDLE(mCbvSrvHeap->GetGPUDescriptorHandleForHeapStart(),
             mCurrFrameResourceIndex * n + ri->ObjCBIndex, mCbvSrvUavDescriptorSize);
@@ -499,6 +528,59 @@ void PhongApp::CreateProceduralTexture(const std::string& name)
         D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     mCommandList->ResourceBarrier(1,&b);
     mTextures[name]=tex; mTextureUploads[name]=upload;
+}
+
+void PhongApp::CreateSolidTexture(const std::string& name, UINT rgba)
+{
+    if (mTextures.count(name)) return;
+
+    const UINT W = 4, H = 4;
+    std::vector<UINT> px(W * H, rgba);
+
+    D3D12_RESOURCE_DESC td = {};
+    td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    td.Width = W;
+    td.Height = H;
+    td.DepthOrArraySize = 1;
+    td.MipLevels = 1;
+    td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    td.SampleDesc.Count = 1;
+    td.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+
+    auto defHeap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+    ComPtr<ID3D12Resource> tex, upload;
+    ThrowIfFailed(md3dDevice->CreateCommittedResource(&defHeap, D3D12_HEAP_FLAG_NONE,
+        &td, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&tex)));
+
+    UINT64 uploadSize = 0;
+    md3dDevice->GetCopyableFootprints(&td, 0, 1, 0, nullptr, nullptr, nullptr, &uploadSize);
+    auto uplHeap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
+    auto uplDesc = CD3DX12_RESOURCE_DESC_BUFFER(uploadSize);
+    ThrowIfFailed(md3dDevice->CreateCommittedResource(&uplHeap, D3D12_HEAP_FLAG_NONE,
+        &uplDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&upload)));
+
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT layout;
+    UINT numRows; UINT64 rowSize;
+    md3dDevice->GetCopyableFootprints(&td, 0, 1, 0, &layout, &numRows, &rowSize, nullptr);
+
+    BYTE* mapped = nullptr;
+    upload->Map(0, nullptr, (void**)&mapped);
+    for (UINT r = 0; r < numRows; ++r)
+        memcpy(mapped + layout.Offset + r * layout.Footprint.RowPitch,
+               (BYTE*)px.data() + r * W * 4, rowSize);
+    upload->Unmap(0, nullptr);
+
+    D3D12_TEXTURE_COPY_LOCATION dst = { tex.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX };
+    D3D12_TEXTURE_COPY_LOCATION src = { upload.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT };
+    src.PlacedFootprint = layout;
+    mCommandList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+
+    auto b = CD3DX12_RESOURCE_BARRIER_TRANSITION(tex.Get(),
+        D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    mCommandList->ResourceBarrier(1, &b);
+
+    mTextures[name] = tex;
+    mTextureUploads[name] = upload;
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -687,6 +769,102 @@ void PhongApp::BuildDefaultCube()
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// BuildLightSphereObjects — заранее создаёт 128 маленьких сфер для point lights.
+// Сами point lights остаются в StructuredBuffer, а сферы являются их видимыми
+// объектами в сцене.
+// ════════════════════════════════════════════════════════════════════════════
+void PhongApp::BuildLightSphereObjects()
+{
+    const std::string sphereTexName = "__light_sphere_white__";
+    CreateSolidTexture(sphereTexName, 0xFFFFFFFF);
+
+    const UINT sliceCount = 24;
+    const UINT stackCount = 12;
+    std::vector<Vertex> verts;
+    std::vector<uint32_t> idx;
+    verts.reserve((sliceCount + 1) * (stackCount + 1));
+
+    for (UINT i = 0; i <= stackCount; ++i)
+    {
+        float phi = MathHelper::Pi * (float)i / (float)stackCount;
+        float y   = cosf(phi);
+        float r   = sinf(phi);
+
+        for (UINT j = 0; j <= sliceCount; ++j)
+        {
+            float theta = 2.0f * MathHelper::Pi * (float)j / (float)sliceCount;
+            XMFLOAT3 p = { r * sinf(theta), y, r * cosf(theta) };
+            Vertex v{};
+            v.Pos      = p;
+            // Нормали направлены внутрь: point light находится в центре сферы,
+            // поэтому такая сфера подсвечивается собственным источником.
+            v.Normal   = { -p.x, -p.y, -p.z };
+            v.TexCoord = { (float)j / (float)sliceCount, (float)i / (float)stackCount };
+            verts.push_back(v);
+        }
+    }
+
+    for (UINT i = 0; i < stackCount; ++i)
+    {
+        for (UINT j = 0; j < sliceCount; ++j)
+        {
+            uint32_t a = i * (sliceCount + 1) + j;
+            uint32_t b = a + sliceCount + 1;
+            idx.push_back(a);     idx.push_back(b);     idx.push_back(a + 1);
+            idx.push_back(a + 1); idx.push_back(b);     idx.push_back(b + 1);
+        }
+    }
+
+    UINT vbSz = (UINT)(verts.size() * sizeof(Vertex));
+    UINT ibSz = (UINT)(idx.size()   * sizeof(uint32_t));
+
+    auto geo = std::make_unique<MeshGeometry>();
+    geo->Name = "lightSphereGeo";
+    ThrowIfFailed(D3DCreateBlob(vbSz, &geo->VertexBufferCPU));
+    memcpy(geo->VertexBufferCPU->GetBufferPointer(), verts.data(), vbSz);
+    ThrowIfFailed(D3DCreateBlob(ibSz, &geo->IndexBufferCPU));
+    memcpy(geo->IndexBufferCPU->GetBufferPointer(), idx.data(), ibSz);
+
+    geo->VertexBufferGPU = d3dUtil::CreateDefaultBuffer(md3dDevice.Get(),
+        mCommandList.Get(), verts.data(), vbSz, geo->VertexBufferUploader);
+    geo->IndexBufferGPU = d3dUtil::CreateDefaultBuffer(md3dDevice.Get(),
+        mCommandList.Get(), idx.data(), ibSz, geo->IndexBufferUploader);
+    geo->VertexByteStride     = sizeof(Vertex);
+    geo->VertexBufferByteSize = vbSz;
+    geo->IndexFormat          = DXGI_FORMAT_R32_UINT;
+    geo->IndexBufferByteSize  = ibSz;
+
+    SubmeshGeometry sub{};
+    sub.IndexCount = (UINT)idx.size();
+    geo->DrawArgs["sphere"] = sub;
+
+    MeshGeometry* geoPtr = geo.get();
+    const std::string geoName = geo->Name;
+    mGeometries[geoName] = std::move(geo);
+
+    mLightSphereRItems.clear();
+    mLightSphereRItems.reserve(MaxPointLightObjects);
+
+    for (UINT i = 0; i < MaxPointLightObjects; ++i)
+    {
+        auto ri = std::make_unique<RenderItem>();
+        ri->ObjCBIndex  = (UINT)mAllRItems.size();
+        ri->Geo         = geoPtr;
+        ri->SubMesh     = "sphere";
+        ri->TextureName = sphereTexName;
+        ri->Visible     = false;
+        ri->Mat.Ambient  = { 0.6f, 0.5f, 0.25f, 1.f };
+        ri->Mat.Diffuse  = { 1.0f, 0.85f, 0.35f, 1.f };
+        ri->Mat.Specular = { 1.0f, 1.0f, 1.0f, 64.f };
+        XMStoreFloat4x4(&ri->World, XMMatrixScaling(0.001f, 0.001f, 0.001f));
+
+        mLightSphereRItems.push_back(ri.get());
+        mOpaqueRItems.push_back(ri.get());
+        mAllRItems.push_back(std::move(ri));
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // BuildLampMeshes — создаёт меши абажуров над Point Light 0 и 1
 // Абажур = плоская коробка (диск сверху), тёмно-красная
 // ════════════════════════════════════════════════════════════════════════════
@@ -794,15 +972,183 @@ void PhongApp::BuildLampMeshes()
 }
 
 // ─── Camera ───────────────────────────────────────────────────────────────────
+void PhongApp::GetCameraBasis(XMVECTOR& pos, XMVECTOR& forward,
+                              XMVECTOR& right, XMVECTOR& up) const
+{
+    pos = XMLoadFloat3(&mCameraPos);
+
+    float cp = cosf(mPitch);
+    XMFLOAT3 f(cp * sinf(mYaw), sinf(mPitch), cp * cosf(mYaw));
+    forward = XMVector3Normalize(XMLoadFloat3(&f));
+    right   = XMVector3Normalize(XMVector3Cross(XMVectorSet(0, 1, 0, 0), forward));
+    up      = XMVector3Normalize(XMVector3Cross(forward, right));
+}
+
+void PhongApp::UpdateCamera(const GameTimer& gt)
+{
+    XMVECTOR pos, forward, right, up;
+    GetCameraBasis(pos, forward, right, up);
+
+    float speed = mMoveSpeed * gt.DeltaTime();
+    if (GetAsyncKeyState(VK_SHIFT) & 0x8000) speed *= 2.5f;
+
+    if (GetAsyncKeyState('W') & 0x8000) pos += forward * speed;
+    if (GetAsyncKeyState('S') & 0x8000) pos -= forward * speed;
+    if (GetAsyncKeyState('D') & 0x8000) pos += right   * speed;
+    if (GetAsyncKeyState('A') & 0x8000) pos -= right   * speed;
+    if (GetAsyncKeyState('E') & 0x8000) pos += XMVectorSet(0, 1, 0, 0) * speed;
+    if (GetAsyncKeyState('Q') & 0x8000) pos -= XMVectorSet(0, 1, 0, 0) * speed;
+
+    XMStoreFloat3(&mCameraPos, pos);
+}
+
+void PhongApp::UpdateLightObjects(const GameTimer& gt)
+{
+    // Границы комнаты breakfast_room. Летящие световые сферы останавливаются
+    // на ближайшей стене/полу/потолке и остаются там как point light objects.
+    const float minX = -6.6f,  maxX = 5.4f;
+    const float minY = -1.74f, maxY = 8.11f;
+    const float minZ = -4.77f, maxZ = 10.16f;
+    const float sphereRadius = 0.18f;
+    const float dt = gt.DeltaTime();
+
+    for (auto& obj : mLightObjects)
+    {
+        if (!obj.Active || !obj.Moving) continue;
+
+        XMFLOAT3 p = obj.Light.Position;
+        p.x += obj.Velocity.x * dt;
+        p.y += obj.Velocity.y * dt;
+        p.z += obj.Velocity.z * dt;
+
+        bool hit = false;
+        if (p.x < minX + sphereRadius) { p.x = minX + sphereRadius; hit = true; }
+        if (p.x > maxX - sphereRadius) { p.x = maxX - sphereRadius; hit = true; }
+        if (p.y < minY + sphereRadius) { p.y = minY + sphereRadius; hit = true; }
+        if (p.y > maxY - sphereRadius) { p.y = maxY - sphereRadius; hit = true; }
+        if (p.z < minZ + sphereRadius) { p.z = minZ + sphereRadius; hit = true; }
+        if (p.z > maxZ - sphereRadius) { p.z = maxZ - sphereRadius; hit = true; }
+
+        obj.Light.Position = p;
+        if (hit)
+        {
+            obj.Moving = false;
+            obj.Velocity = { 0.f, 0.f, 0.f };
+        }
+    }
+
+    mPointLights.clear();
+    mPointLights.reserve(mLightObjects.size());
+    for (const auto& obj : mLightObjects)
+        if (obj.Active)
+            mPointLights.push_back(obj.Light);
+
+    // Синхронизируем видимые сферы с массивом point lights.
+    // Порядок сфер совпадает с порядком данных в StructuredBuffer.
+    for (UINT i = 0; i < (UINT)mLightSphereRItems.size(); ++i)
+    {
+        RenderItem* ri = mLightSphereRItems[i];
+        if (i < (UINT)mPointLights.size())
+        {
+            const PointLight& L = mPointLights[i];
+            XMFLOAT3 p = L.Position;
+            XMStoreFloat4x4(&ri->World,
+                XMMatrixScaling(sphereRadius, sphereRadius, sphereRadius) *
+                XMMatrixTranslation(p.x, p.y, p.z));
+
+            ri->Visible = true;
+            ri->Mat.Ambient  = { L.Diffuse.x * 0.45f, L.Diffuse.y * 0.45f, L.Diffuse.z * 0.45f, 1.f };
+            ri->Mat.Diffuse  = { L.Diffuse.x, L.Diffuse.y, L.Diffuse.z, 1.f };
+            ri->Mat.Specular = { 1.0f, 1.0f, 1.0f, 64.f };
+            ri->NumFramesDirty = 3;
+        }
+        else
+        {
+            if (ri->Visible)
+            {
+                ri->Visible = false;
+                XMStoreFloat4x4(&ri->World, XMMatrixScaling(0.001f, 0.001f, 0.001f));
+                ri->NumFramesDirty = 3;
+            }
+        }
+    }
+
+    mLightingData.NumPointLights = (int)mPointLights.size();
+}
+
+void PhongApp::ShootPointLight()
+{
+    XMVECTOR eye, forward, right, up;
+    GetCameraBasis(eye, forward, right, up);
+
+    // Источник появляется прямо перед камерой и летит строго по forward-вектору.
+    // Поэтому при взгляде вверх он летит вверх, при взгляде вниз — вниз.
+    XMVECTOR spawn = eye + forward * 0.55f;
+
+    XMFLOAT3 spawnPos, dir;
+    XMStoreFloat3(&spawnPos, spawn);
+    XMStoreFloat3(&dir, XMVector3Normalize(forward));
+
+    static const XMFLOAT4 kColors[] = {
+        { 1.00f, 0.85f, 0.35f, 1.f }, // тёплый жёлтый
+        { 0.25f, 0.65f, 1.00f, 1.f }, // голубой
+        { 0.30f, 1.00f, 0.35f, 1.f }, // зелёный
+        { 1.00f, 0.35f, 0.90f, 1.f }, // розовый
+        { 1.00f, 0.45f, 0.20f, 1.f }, // оранжевый
+    };
+    XMFLOAT4 color = kColors[mShotCounter % (sizeof(kColors) / sizeof(kColors[0]))];
+
+    PointLight L{};
+    L.Position    = spawnPos;
+    L.Range       = 8.0f;
+    L.Ambient     = { color.x * 0.05f, color.y * 0.05f, color.z * 0.05f, 1.f };
+    L.Diffuse     = color;
+    L.Specular    = color;
+    L.Attenuation = { 1.f, 0.16f, 0.030f };
+
+    LightObject obj{};
+    obj.Light    = L;
+    obj.Active   = true;
+    obj.Moving   = true;
+
+    const float shotSpeed = 9.0f;
+    obj.Velocity = { dir.x * shotSpeed, dir.y * shotSpeed, dir.z * shotSpeed };
+
+    if (mLightObjects.size() >= MaxPointLightObjects)
+    {
+        // Сохраняем три стартовых комнатных источника, а удаляем самый старый
+        // выстреленный источник.
+        if (mLightObjects.size() > StaticPointLightCount)
+            mLightObjects.erase(mLightObjects.begin() + StaticPointLightCount);
+        else
+            mLightObjects.erase(mLightObjects.begin());
+    }
+
+    mLightObjects.push_back(obj);
+    ++mShotCounter;
+}
+
+LRESULT PhongApp::MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    if (msg == WM_KEYDOWN)
+    {
+        if (wParam == VK_SPACE && ((lParam & (1 << 30)) == 0))
+        {
+            ShootPointLight();
+            return 0;
+        }
+    }
+    return D3DApp::MsgProc(hwnd, msg, wParam, lParam);
+}
+
 void PhongApp::OnMouseDown(WPARAM,int x,int y){mLastMousePos={x,y};SetCapture(mhMainWnd);}
 void PhongApp::OnMouseUp(WPARAM,int,int){ReleaseCapture();}
 void PhongApp::OnMouseMove(WPARAM b,int x,int y)
 {
     if (b&MK_LBUTTON){
-        mTheta+=XMConvertToRadians(0.25f*(x-mLastMousePos.x));
-        mPhi=MathHelper::Clamp(mPhi+XMConvertToRadians(0.25f*(y-mLastMousePos.y)),0.1f,XM_PI-0.1f);
-    } else if (b&MK_RBUTTON){
-        mRadius=MathHelper::Clamp(mRadius+0.01f*((x-mLastMousePos.x)-(y-mLastMousePos.y)),0.5f,50.f);
+        mYaw   += XMConvertToRadians(0.20f*(x-mLastMousePos.x));
+        mPitch += XMConvertToRadians(-0.20f*(y-mLastMousePos.y));
+        mPitch = MathHelper::Clamp(mPitch, -XM_PIDIV2 + 0.05f, XM_PIDIV2 - 0.05f);
     }
     mLastMousePos={x,y};
 }

@@ -59,6 +59,7 @@ struct RenderItem
     ObjMaterial   Mat;
     D3D12_PRIMITIVE_TOPOLOGY PrimitiveType = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
     bool AnimEnabled = false;
+    bool Visible = true;
 };
 
 struct FrameResource
@@ -70,12 +71,21 @@ struct FrameResource
     UINT64 Fence = 0;
 };
 
+struct LightObject
+{
+    PointLight Light;
+    XMFLOAT3 Velocity = {0.f, 0.f, 0.f};
+    bool Active = false;
+    bool Moving = false;
+};
+
 class PhongApp : public D3DApp
 {
 public:
     explicit PhongApp(HINSTANCE h);
     ~PhongApp() override;
     bool Initialize() override;
+    LRESULT MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) override;
 
 private:
     void OnResize() override;
@@ -86,6 +96,12 @@ private:
     void OnMouseMove(WPARAM b,int x,int y) override;
 
     void SetupLights();
+    void UpdateCamera(const GameTimer& gt);
+    void UpdateLightObjects(const GameTimer& gt);
+    void GetCameraBasis(DirectX::XMVECTOR& pos, DirectX::XMVECTOR& forward,
+                        DirectX::XMVECTOR& right, DirectX::XMVECTOR& up) const;
+    void ShootPointLight();
+    void BuildLightSphereObjects();
     void BuildDescriptorHeaps();
     void BuildConstantBufferViews();
     void BuildTextureViews();
@@ -93,6 +109,7 @@ private:
 
     bool LoadTexture(const std::string& name, const std::wstring& path);
     void CreateProceduralTexture(const std::string& name);
+    void CreateSolidTexture(const std::string& name, UINT rgba);
     bool LoadScene(const std::string& objFile);
     std::unordered_map<std::string,ObjMaterial> LoadMtl(const std::string& path);
     void BuildDefaultCube();
@@ -103,14 +120,20 @@ private:
     void DrawRenderItems(ID3D12GraphicsCommandList* cmd);
 
     // ── Camera ────────────────────────────────────────────────────────────────
-    float mTheta  = 1.3f*XM_PI;
-    float mPhi    = 0.4f*XM_PI;
-    float mRadius = 8.f;
+    float mYaw   = 0.0f;
+    float mPitch = 0.0f;
+    float mMoveSpeed = 6.0f;
+    DirectX::XMFLOAT3 mCameraPos = { -0.6f, 2.2f, -2.5f };
     POINT mLastMousePos{};
 
     // ── RenderingSystem (deferred) ────────────────────────────────────────────
     RenderingSystem mRenderer;
     CBLighting      mLightingData{};
+    enum { MaxPointLightObjects = 128, StaticPointLightCount = 3 };
+    std::vector<LightObject> mLightObjects;
+    std::vector<PointLight>  mPointLights;
+    std::vector<RenderItem*> mLightSphereRItems;
+    UINT mShotCounter = 0;
 
     // ── Frame resources ───────────────────────────────────────────────────────
     std::vector<std::unique_ptr<FrameResource>> mFrameResources;
@@ -122,13 +145,15 @@ private:
     //   [0 .. n*3-1]         — object CBVs  (n objects × 3 frames)
     //   [n*3 .. n*3+2]       — pass   CBVs  (3 frames)
     //   [n*3+3 .. n*3+5]     — lighting CBVs(3 frames)
-    //   [n*3+6 .. n*3+6+T-1] — texture SRVs (T textures)
+    //   [n*3+6 .. n*3+8]     — point light StructuredBuffer SRVs(3 frames)
+    //   [n*3+9 .. n*3+9+T-1] — texture SRVs (T textures)
     //   [last 3]             — G-Buffer SRVs (Position, Normal, Albedo)
     ComPtr<ID3D12DescriptorHeap> mCbvSrvHeap;
     ComPtr<ID3D12DescriptorHeap> mGBufferRtvHeap; // RTV heap for G-Buffer
 
     UINT mPassCbvOffset  = 0;
     UINT mLightCbvOffset = 0;
+    UINT mPointLightSrvOffset = 0;
     UINT mSrvBaseOffset  = 0;
     UINT mGBufSrvOffset  = 0;
 

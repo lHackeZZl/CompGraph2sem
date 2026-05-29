@@ -44,10 +44,9 @@ struct SpotLight
 struct CBLighting
 {
     DirectionalLight DirLight;
-    PointLight       PointLights[3];
     SpotLight        Spot;
     DirectX::XMFLOAT3 EyePosW; float Pad0 = 0;
-    int  NumPointLights = 3;
+    int  NumPointLights = 0;
     int  HasSpot        = 1;
     DirectX::XMFLOAT2 Pad1;
 };
@@ -74,7 +73,7 @@ public:
                   UINT                  srvBaseIndex);
 
     // Обновляет lighting CB (вызывать каждый кадр).
-    void UpdateLightingCB(int frameIndex, const CBLighting& data);
+    void UpdateLightingData(int frameIndex, const CBLighting& data, const std::vector<PointLight>& pointLights);
 
     // Возвращает смещение lighting CBV в общей куче (3 слота × frameCount).
     UINT LightingCbvOffset() const { return mLightingCbvOffset; }
@@ -95,6 +94,7 @@ public:
     void LightingPass(ID3D12GraphicsCommandList*  cmd,
                       D3D12_CPU_DESCRIPTOR_HANDLE  rtvBackBuffer,
                       D3D12_GPU_DESCRIPTOR_HANDLE  lightingCbvGpu,
+                      D3D12_GPU_DESCRIPTOR_HANDLE  pointLightsSrvGpu,
                       const D3D12_VIEWPORT&        vp,
                       const D3D12_RECT&            sr);
 
@@ -109,10 +109,14 @@ public:
 
     // Создаёт CBV для lighting в общей куче.
     // Вызвать один раз после BuildDescriptorHeaps в PhongApp.
-    void BuildLightingCBVs(ID3D12Device*         device,
-                           ID3D12DescriptorHeap* heap,
-                           UINT                  baseIndex,
-                           UINT                  descSize);
+    void BuildLightingViews(ID3D12Device*         device,
+                            ID3D12DescriptorHeap* heap,
+                            UINT                  cbvBaseIndex,
+                            UINT                  pointSrvBaseIndex,
+                            UINT                  descSize);
+
+    D3D12_GPU_DESCRIPTOR_HANDLE PointLightsSrvGpuHandle(
+        ID3D12DescriptorHeap* heap, int frameIndex, UINT descSize) const;
 
     GBuffer& GetGBuffer() { return mGBuffer; }
 
@@ -130,6 +134,7 @@ private:
 
     // Lighting CB offset in main heap
     UINT mLightingCbvOffset = 0;
+    UINT mPointLightSrvOffset = 0;
 
     // Root signatures
     ComPtr<ID3D12RootSignature> mGeometryRS;
@@ -145,7 +150,9 @@ private:
     ComPtr<ID3D12Resource> mQuadVBUpload, mQuadIBUpload;
 
     // Lighting upload buffers (one per frame resource)
+    static const UINT MaxPointLights = 128;
     std::unique_ptr<UploadBuffer<CBLighting>> mLightingCBs[3];
+    std::unique_ptr<UploadBuffer<PointLight>> mPointLightSBs[3];
 
     // Shader bytecode
     ComPtr<ID3DBlob> mGeomVS, mGeomPS;

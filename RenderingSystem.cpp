@@ -1,6 +1,7 @@
 // RenderingSystem.cpp
 #include "RenderingSystem.h"
 #include <cassert>
+#include <algorithm>
 
 using namespace DirectX;
 
@@ -19,7 +20,10 @@ void RenderingSystem::Initialize(ID3D12Device*              device,
 
     // Upload buffers for lighting CB (3 frame resources)
     for (int i = 0; i < 3; ++i)
-        mLightingCBs[i] = std::make_unique<UploadBuffer<CBLighting>>(device, 1, true);
+    {
+        mLightingCBs[i]  = std::make_unique<UploadBuffer<CBLighting>>(device, 1, true);
+        mPointLightSBs[i] = std::make_unique<UploadBuffer<PointLight>>(device, MaxPointLights, false);
+    }
 
     BuildRootSignatures(device);
     BuildPSOs(device, backBufferFmt, depthFmt);
@@ -46,27 +50,56 @@ void RenderingSystem::OnResize(UINT                  width,
 }
 
 // ─── Lighting CB views ────────────────────────────────────────────────────────
-void RenderingSystem::BuildLightingCBVs(ID3D12Device*         device,
-                                        ID3D12DescriptorHeap* heap,
-                                        UINT                  baseIndex,
-                                        UINT                  descSize)
+void RenderingSystem::BuildLightingViews(ID3D12Device*         device,
+                                         ID3D12DescriptorHeap* heap,
+                                         UINT                  cbvBaseIndex,
+                                         UINT                  pointSrvBaseIndex,
+                                         UINT                  descSize)
 {
-    mLightingCbvOffset = baseIndex;
+    mLightingCbvOffset  = cbvBaseIndex;
+    mPointLightSrvOffset = pointSrvBaseIndex;
+
     UINT sz = d3dUtil::CalcConstantBufferByteSize(sizeof(CBLighting));
     for (int i = 0; i < 3; ++i)
     {
-        auto h = CD3DX12_CPU_HANDLE(
+        auto cbvH = CD3DX12_CPU_HANDLE(
             heap->GetCPUDescriptorHandleForHeapStart(),
-            baseIndex + i, descSize);
-        D3D12_CONSTANT_BUFFER_VIEW_DESC v = {
+            cbvBaseIndex + i, descSize);
+        D3D12_CONSTANT_BUFFER_VIEW_DESC cbv = {
             mLightingCBs[i]->Resource()->GetGPUVirtualAddress(), sz };
-        device->CreateConstantBufferView(&v, h);
+        device->CreateConstantBufferView(&cbv, cbvH);
+
+        auto srvH = CD3DX12_CPU_HANDLE(
+            heap->GetCPUDescriptorHandleForHeapStart(),
+            pointSrvBaseIndex + i, descSize);
+        D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
+        srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srv.Format                  = DXGI_FORMAT_UNKNOWN;
+        srv.ViewDimension           = D3D12_SRV_DIMENSION_BUFFER;
+        srv.Buffer.FirstElement     = 0;
+        srv.Buffer.NumElements      = MaxPointLights;
+        srv.Buffer.StructureByteStride = sizeof(PointLight);
+        srv.Buffer.Flags            = D3D12_BUFFER_SRV_FLAG_NONE;
+        device->CreateShaderResourceView(mPointLightSBs[i]->Resource(), &srv, srvH);
     }
 }
 
-void RenderingSystem::UpdateLightingCB(int frameIndex, const CBLighting& data)
+D3D12_GPU_DESCRIPTOR_HANDLE RenderingSystem::PointLightsSrvGpuHandle(
+    ID3D12DescriptorHeap* heap, int frameIndex, UINT descSize) const
 {
-    mLightingCBs[frameIndex]->CopyData(0, data);
+    return CD3DX12_GPU_HANDLE(heap->GetGPUDescriptorHandleForHeapStart(),
+        mPointLightSrvOffset + frameIndex, descSize);
+}
+
+void RenderingSystem::UpdateLightingData(int frameIndex, const CBLighting& data,
+                                         const std::vector<PointLight>& pointLights)
+{
+    CBLighting copy = data;
+    copy.NumPointLights = (int)std::min<size_t>(pointLights.size(), MaxPointLights);
+    mLightingCBs[frameIndex]->CopyData(0, copy);
+
+    for (int i = 0; i < copy.NumPointLights; ++i)
+        mPointLightSBs[frameIndex]->CopyData(i, pointLights[(size_t)i]);
 }
 
 // ─── Root Signatures ──────────────────────────────────────────────────────────
@@ -122,10 +155,13 @@ void RenderingSystem::BuildRootSignatures(ID3D12Device* device)
             CD3DX12_DESCRIPTOR_RANGE(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 0);
         D3D12_DESCRIPTOR_RANGE r1 =
             CD3DX12_DESCRIPTOR_RANGE(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3, 0);
+        D3D12_DESCRIPTOR_RANGE r2 =
+            CD3DX12_DESCRIPTOR_RANGE(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 3);
 
-        D3D12_ROOT_PARAMETER p[2];
+        D3D12_ROOT_PARAMETER p[3];
         p[0] = CD3DX12_ROOT_PARAMETER_TABLE(1, &r0);
         p[1] = CD3DX12_ROOT_PARAMETER_TABLE(1, &r1, D3D12_SHADER_VISIBILITY_PIXEL);
+        p[2] = CD3DX12_ROOT_PARAMETER_TABLE(1, &r2, D3D12_SHADER_VISIBILITY_PIXEL);
 
         D3D12_STATIC_SAMPLER_DESC samp = {};
         samp.Filter   = D3D12_FILTER_MIN_MAG_MIP_POINT;
@@ -136,7 +172,7 @@ void RenderingSystem::BuildRootSignatures(ID3D12Device* device)
         samp.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
         D3D12_ROOT_SIGNATURE_DESC desc = {};
-        desc.NumParameters     = 2;
+        desc.NumParameters     = 3;
         desc.pParameters       = p;
         desc.NumStaticSamplers = 1;
         desc.pStaticSamplers   = &samp;
@@ -316,6 +352,7 @@ void RenderingSystem::EndGeometryPass(ID3D12GraphicsCommandList* cmd)
 void RenderingSystem::LightingPass(ID3D12GraphicsCommandList*  cmd,
                                    D3D12_CPU_DESCRIPTOR_HANDLE  rtvBackBuffer,
                                    D3D12_GPU_DESCRIPTOR_HANDLE  lightingCbvGpu,
+                                   D3D12_GPU_DESCRIPTOR_HANDLE  pointLightsSrvGpu,
                                    const D3D12_VIEWPORT&        vp,
                                    const D3D12_RECT&            sr)
 {
@@ -332,6 +369,8 @@ void RenderingSystem::LightingPass(ID3D12GraphicsCommandList*  cmd,
     cmd->SetGraphicsRootDescriptorTable(0, lightingCbvGpu);
     // slot 1 — G-Buffer SRVs (Position, Normal, Albedo — три подряд)
     cmd->SetGraphicsRootDescriptorTable(1, mGBuffer.FirstSrvGpuHandle());
+    // slot 2 — StructuredBuffer<PointLight>
+    cmd->SetGraphicsRootDescriptorTable(2, pointLightsSrvGpu);
 
     // Fullscreen quad
     D3D12_VERTEX_BUFFER_VIEW vbv = {};

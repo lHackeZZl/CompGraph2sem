@@ -1,5 +1,5 @@
 // lighting.hlsl — Lighting Pass: Phong + Hemisphere Ambient (fake soft shadows)
-// Supports: 1 Directional + 3 Point + 1 Spot light
+// Supports: 1 Directional + StructuredBuffer<PointLight> + 1 Spot light
 
 // ─── Light structures ─────────────────────────────────────────────────────────
 struct DirectionalLight
@@ -33,7 +33,6 @@ struct SpotLight
 cbuffer CBLighting : register(b0)
 {
     DirectionalLight gDirLight;
-    PointLight       gPointLights[3];
     SpotLight        gSpotLight;
     float3           gEyePosW;   float gPad0;
     int              gNumPointLights;
@@ -45,6 +44,7 @@ cbuffer CBLighting : register(b0)
 Texture2D    gGBufPosition : register(t0);
 Texture2D    gGBufNormal   : register(t1);
 Texture2D    gGBufAlbedo   : register(t2);
+StructuredBuffer<PointLight> gPointLights : register(t3);
 SamplerState gSampler      : register(s0);
 
 // ─── Vertex shader ────────────────────────────────────────────────────────────
