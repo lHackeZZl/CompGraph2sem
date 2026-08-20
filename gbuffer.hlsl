@@ -18,6 +18,10 @@ cbuffer CBPerObject : register(b0)
     float    gTessFar;
     float    gTessMin;
     float    gTessMax;
+    float    gUseProceduralDisplacement;
+    float    gNoiseFrequency;
+    float    gNoiseOctaves;
+    float    gNoiseSeed;
 };
 
 cbuffer CBPerPass : register(b1)
@@ -110,6 +114,54 @@ struct PatchTess
     float EdgeTess[3]   : SV_TessFactor;
     float InsideTess[1] : SV_InsideTessFactor;
 };
+
+// Coherent 3D gradient noise (Perlin-style). 3D object-space coordinates keep
+// the displacement continuous across UV seams and adjacent mesh patches.
+float3 NoiseGradient(float3 cell)
+{
+    float3 p = float3(dot(cell, float3(127.1f, 311.7f,  74.7f)),
+                      dot(cell, float3(269.5f, 183.3f, 246.1f)),
+                      dot(cell, float3(113.5f, 271.9f, 124.6f)));
+    return normalize(frac(sin(p + gNoiseSeed) * 43758.5453f) * 2.0f - 1.0f);
+}
+
+float PerlinNoise(float3 p)
+{
+    float3 cell = floor(p);
+    float3 f = frac(p);
+    float3 u = f * f * f * (f * (f * 6.0f - 15.0f) + 10.0f);
+
+    float n000 = dot(NoiseGradient(cell + float3(0,0,0)), f - float3(0,0,0));
+    float n100 = dot(NoiseGradient(cell + float3(1,0,0)), f - float3(1,0,0));
+    float n010 = dot(NoiseGradient(cell + float3(0,1,0)), f - float3(0,1,0));
+    float n110 = dot(NoiseGradient(cell + float3(1,1,0)), f - float3(1,1,0));
+    float n001 = dot(NoiseGradient(cell + float3(0,0,1)), f - float3(0,0,1));
+    float n101 = dot(NoiseGradient(cell + float3(1,0,1)), f - float3(1,0,1));
+    float n011 = dot(NoiseGradient(cell + float3(0,1,1)), f - float3(0,1,1));
+    float n111 = dot(NoiseGradient(cell + float3(1,1,1)), f - float3(1,1,1));
+
+    float4 nx = lerp(float4(n000, n010, n001, n011),
+                     float4(n100, n110, n101, n111), u.x);
+    float2 nxy = lerp(nx.xz, nx.yw, u.y);
+    return lerp(nxy.x, nxy.y, u.z);
+}
+
+float FractalNoise(float3 p)
+{
+    float sum = 0.0f;
+    float amplitude = 0.5f;
+    float normalization = 0.0f;
+    int octaves = clamp((int)gNoiseOctaves, 1, 8);
+    [loop]
+    for (int i = 0; i < octaves; ++i)
+    {
+        sum += PerlinNoise(p) * amplitude;
+        normalization += amplitude;
+        p = p * 2.03f + float3(19.1f, 7.7f, 3.4f);
+        amplitude *= 0.5f;
+    }
+    return sum / max(normalization, 0.001f);
+}
 
 float3 ClosestPointOnTriangle(float3 p, float3 a, float3 b, float3 c)
 {
@@ -215,7 +267,27 @@ VertexOut DS(PatchTess pt,
     nrm = normalize(nrm);
     tex = tex * gTexScale + gTexOffset;
 
-    if (gUseDisplacementMap > 0.5f)
+    if (gUseProceduralDisplacement > 0.5f)
+    {
+        float3 samplePos = pos * max(gNoiseFrequency, 0.001f);
+        float h = FractalNoise(samplePos);
+
+        // Estimate the height gradient in the tangent plane. Updating the
+        // geometric normal makes deferred lighting follow the actual relief.
+        float3 tangent = normalize(abs(nrm.y) < 0.999f
+            ? cross(float3(0.0f, 1.0f, 0.0f), nrm)
+            : cross(float3(1.0f, 0.0f, 0.0f), nrm));
+        float3 bitangent = normalize(cross(nrm, tangent));
+        const float eps = 0.015f;
+        float hT = FractalNoise((pos + tangent * eps) * max(gNoiseFrequency, 0.001f));
+        float hB = FractalNoise((pos + bitangent * eps) * max(gNoiseFrequency, 0.001f));
+        float dhT = (hT - h) * gDisplacementScale / eps;
+        float dhB = (hB - h) * gDisplacementScale / eps;
+
+        pos += nrm * (h * gDisplacementScale);
+        nrm = normalize(nrm - tangent * dhT - bitangent * dhB);
+    }
+    else if (gUseDisplacementMap > 0.5f)
     {
         float h = gDisplacementMap.SampleLevel(gSampler, tex, 0).r;
 

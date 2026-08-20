@@ -24,6 +24,10 @@ struct CBPerObject
     float      TessFar  = 18.f;
     float      TessMin  = 1.f;
     float      TessMax  = 16.f;
+    float      UseProceduralDisplacement = 0.f;
+    float      NoiseFrequency = 1.f;
+    float      NoiseOctaves = 4.f;
+    float      NoiseSeed = 0.f;
 };
 
 struct CBPerPass
@@ -78,6 +82,10 @@ struct RenderItem
     float TessFar  = 18.f;
     float TessMin  = 1.f;
     float TessMax  = 16.f;
+    bool  UseProceduralDisplacement = false;
+    float NoiseFrequency = 1.f;
+    float NoiseOctaves = 4.f;
+    float NoiseSeed = 0.f;
 };
 
 struct FrameResource

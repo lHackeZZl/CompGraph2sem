@@ -312,6 +312,10 @@ void PhongApp::UpdateObjectCBs(const GameTimer&)
         o.TessFar  = e->TessFar;
         o.TessMin  = e->TessMin;
         o.TessMax  = e->TessMax;
+        o.UseProceduralDisplacement = e->UseProceduralDisplacement ? 1.f : 0.f;
+        o.NoiseFrequency = e->NoiseFrequency;
+        o.NoiseOctaves = e->NoiseOctaves;
+        o.NoiseSeed = e->NoiseSeed;
         cb->CopyData(e->ObjCBIndex, o);
         --e->NumFramesDirty;
     }
@@ -953,15 +957,20 @@ bool PhongApp::LoadScene(const std::string& objFile)
 
         if (isWall)
         {
-            ri->NormalMapName       = mWallNormalName;
-            ri->DisplacementMapName = mWallDisplaceName;
-            ri->UseNormalMap        = true;
-            ri->UseDisplacementMap  = true;
+            // GPU procedural displacement: coherent 3D gradient noise is
+            // evaluated directly in the domain shader, so it needs neither
+            // a height texture nor UVs and does not create texture seams.
+            ri->UseNormalMap        = false;
+            ri->UseDisplacementMap  = false;
+            ri->UseProceduralDisplacement = true;
             ri->UseTessellation     = true;
             ri->PrimitiveType       = D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST;
             // Стены большие и плоские, поэтому displacement нужен заметнее.
             // TessMin > 1 оставляет рельеф читаемым и на средней/дальней дистанции.
-            ri->DisplacementScale   = 0.34f;
+            ri->DisplacementScale   = 0.24f;
+            ri->NoiseFrequency      = 1.35f;
+            ri->NoiseOctaves        = 5.0f;
+            ri->NoiseSeed           = 17.0f;
             ri->TessNear            = 0.6f;
             ri->TessFar             = 18.0f;
             ri->TessMin             = 4.0f;
