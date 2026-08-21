@@ -4,6 +4,9 @@
 #include <sstream>
 #include <comdef.h>
 #include <wincodec.h>
+#include <cfloat>
+#include <algorithm>
+#include <cmath>
 #pragma comment(lib,"windowscodecs.lib")
 
 static UINT PackRGBA(BYTE r, BYTE g, BYTE b, BYTE a = 255)
@@ -61,12 +64,17 @@ bool PhongApp::Initialize()
     CreateDefaultMaterialTextures();
     CreateSceneTessellationTextures();
 
+    // Thousands of shared-mesh objects form a deterministic stress scene for
+    // comparing no culling, linear frustum culling and octree traversal.
+    BuildStressTestObjects(2500);
+
     // Центральный демонстрационный displaced quad убран: теперь тесселяция
     // применяется только к объектам сцены — стенам и картине.
 
     // Создаём видимые объекты-источники света заранее: маленькие сферы,
     // которыми потом можно стрелять из камеры. Они входят в ObjectCB layout.
     BuildLightSphereObjects();
+    BuildSpatialIndex();
 
     BuildFrameResources();
     BuildDescriptorHeaps();         // создаёт mCbvSrvHeap и mGBufferRtvHeap
@@ -284,6 +292,8 @@ void PhongApp::Update(const GameTimer& gt)
     mTime += gt.DeltaTime();
     UpdateCamera(gt);
     UpdateLightObjects(gt);
+    UpdateVisibleSet();
+    UpdateCullingCaption(gt.DeltaTime());
     UpdateObjectCBs(gt);
     UpdatePassCB(gt);
 
@@ -406,7 +416,7 @@ void PhongApp::Draw(const GameTimer&)
 void PhongApp::DrawRenderItems(ID3D12GraphicsCommandList* cmd)
 {
     UINT n = (UINT)mAllRItems.size();
-    for (auto* ri : mOpaqueRItems)
+    for (auto* ri : mVisibleRItems)
     {
         if (!ri->Visible) continue;
 
@@ -445,6 +455,72 @@ void PhongApp::DrawRenderItems(ID3D12GraphicsCommandList* cmd)
         cmd->DrawIndexedInstanced(sub.IndexCount, 1,
             sub.StartIndexLocation, sub.BaseVertexLocation, 0);
     }
+}
+
+void PhongApp::UpdateVisibleSet()
+{
+    mVisibleRItems.clear();
+    mVisibleRItems.reserve(mOpaqueRItems.size());
+    UINT drawableObjectCount = 0;
+    for (auto* item : mOpaqueRItems)
+        if (item->Visible) ++drawableObjectCount;
+
+    if (!mFrustumCullingEnabled)
+    {
+        for (auto* item : mOpaqueRItems)
+            if (item->Visible) mVisibleRItems.push_back(item);
+        mVisibleObjectCount = (UINT)mVisibleRItems.size();
+        mCulledObjectCount = 0;
+        return;
+    }
+
+    XMVECTOR eye, forward, right, up;
+    GetCameraBasis(eye, forward, right, up);
+    XMMATRIX view = XMMatrixLookToLH(eye, forward, up);
+    XMMATRIX projection = XMLoadFloat4x4(&mProj);
+
+    BoundingFrustum viewFrustum;
+    BoundingFrustum worldFrustum;
+    BoundingFrustum::CreateFromMatrix(viewFrustum, projection);
+    viewFrustum.Transform(worldFrustum, XMMatrixInverse(nullptr, view));
+
+    if (mOctreeCullingEnabled && mOctreeRoot)
+        QueryOctree(*mOctreeRoot, worldFrustum, mVisibleRItems);
+
+    for (auto* item : mOpaqueRItems)
+    {
+        if (!item->Visible) continue;
+        if (mOctreeCullingEnabled && mOctreeRoot && item->InSpatialIndex)
+            continue;
+
+        // Non-indexed and dynamic objects use a direct AABB/frustum test.
+        item->BoundsL.Transform(item->BoundsW, XMLoadFloat4x4(&item->World));
+        if (worldFrustum.Contains(item->BoundsW) != DISJOINT)
+            mVisibleRItems.push_back(item);
+    }
+
+    mVisibleObjectCount = (UINT)mVisibleRItems.size();
+    mCulledObjectCount = drawableObjectCount >= mVisibleObjectCount
+        ? drawableObjectCount - mVisibleObjectCount : 0;
+}
+
+void PhongApp::UpdateCullingCaption(float deltaTime)
+{
+    mCaptionUpdateTimer += deltaTime;
+    if (mCaptionUpdateTimer < 0.25f) return;
+    mCaptionUpdateTimer = 0.f;
+
+    const wchar_t* mode = !mFrustumCullingEnabled
+        ? L"OFF"
+        : (mOctreeCullingEnabled ? L"ON + OCTREE" : L"ON + LINEAR");
+    std::wostringstream title;
+    title << L"DX12 | Drawn: " << mVisibleObjectCount
+          << L" | Culled: " << mCulledObjectCount
+          << L" | Active: " << (mVisibleObjectCount + mCulledObjectCount)
+          << L" | Stress cubes: " << mStressObjectCount
+          << L" | Frustum: " << mode
+          << L" | F1 culling, F2 octree";
+    SetWindowTextW(mhMainWnd, title.str().c_str());
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -940,6 +1016,18 @@ bool PhongApp::LoadScene(const std::string& objFile)
         std::string normName = loadMaterialTexture(g.mat.NormalMap,       mDefaultNormalName);
         std::string dispName = loadMaterialTexture(g.mat.DisplacementMap, mDefaultDisplaceName);
 
+        XMFLOAT3 boundsMin = { FLT_MAX, FLT_MAX, FLT_MAX };
+        XMFLOAT3 boundsMax = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
+        for (const Vertex& v : g.verts)
+        {
+            boundsMin.x = std::min(boundsMin.x, v.Pos.x);
+            boundsMin.y = std::min(boundsMin.y, v.Pos.y);
+            boundsMin.z = std::min(boundsMin.z, v.Pos.z);
+            boundsMax.x = std::max(boundsMax.x, v.Pos.x);
+            boundsMax.y = std::max(boundsMax.y, v.Pos.y);
+            boundsMax.z = std::max(boundsMax.z, v.Pos.z);
+        }
+
         const bool isWall = g.objectName.find("breakfast_room_Wall_") != std::string::npos;
         const bool isArtwork = (g.materialName == "breakfast_room:Artwork") ||
                                (g.objectName.find("wall_art") != std::string::npos);
@@ -954,6 +1042,14 @@ bool PhongApp::LoadScene(const std::string& objFile)
         ri->UseNormalMap = !g.mat.NormalMap.empty() && normName != mDefaultNormalName;
         ri->UseDisplacementMap = !g.mat.DisplacementMap.empty() && dispName != mDefaultDisplaceName;
         ri->Mat=g.mat;
+        ri->BoundsL.Center = {
+            (boundsMin.x + boundsMax.x) * 0.5f,
+            (boundsMin.y + boundsMax.y) * 0.5f,
+            (boundsMin.z + boundsMax.z) * 0.5f };
+        ri->BoundsL.Extents = {
+            (boundsMax.x - boundsMin.x) * 0.5f + 0.4f,
+            (boundsMax.y - boundsMin.y) * 0.5f + 0.4f,
+            (boundsMax.z - boundsMin.z) * 0.5f + 0.4f };
 
         if (isWall)
         {
@@ -1055,9 +1151,206 @@ void PhongApp::BuildDefaultCube()
     ri->Mat.Ambient={0.2f,0.2f,0.5f,1};
     ri->Mat.Diffuse={0.3f,0.5f,1.0f,1};
     ri->Mat.Specular={1,1,1,64};
+    ri->BoundsL = { {0.f, 0.f, 0.f}, {0.75f, 0.75f, 0.75f} };
     mOpaqueRItems.push_back(ri.get());
     mAllRItems.push_back(std::move(ri));
     CreateProceduralTexture(mFallbackTexName);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Stress scene + octree
+// ════════════════════════════════════════════════════════════════════════════
+void PhongApp::BuildStressTestObjects(UINT objectCount)
+{
+    GeometryGenerator generator;
+    auto cube = generator.CreateBox(0.65f, 0.65f, 0.65f, 0);
+
+    std::vector<Vertex> verts(cube.Vertices.size());
+    for (size_t i = 0; i < cube.Vertices.size(); ++i)
+    {
+        verts[i].Pos = cube.Vertices[i].Position;
+        verts[i].Normal = cube.Vertices[i].Normal;
+        verts[i].TexCoord = cube.Vertices[i].TexCoord;
+    }
+    auto idx16 = cube.GetIndices16();
+    std::vector<uint32_t> indices(idx16.begin(), idx16.end());
+
+    const UINT vbSize = (UINT)(verts.size() * sizeof(Vertex));
+    const UINT ibSize = (UINT)(indices.size() * sizeof(uint32_t));
+    auto geo = std::make_unique<MeshGeometry>();
+    geo->Name = "stressCubeGeo";
+    ThrowIfFailed(D3DCreateBlob(vbSize, &geo->VertexBufferCPU));
+    memcpy(geo->VertexBufferCPU->GetBufferPointer(), verts.data(), vbSize);
+    ThrowIfFailed(D3DCreateBlob(ibSize, &geo->IndexBufferCPU));
+    memcpy(geo->IndexBufferCPU->GetBufferPointer(), indices.data(), ibSize);
+    geo->VertexBufferGPU = d3dUtil::CreateDefaultBuffer(md3dDevice.Get(),
+        mCommandList.Get(), verts.data(), vbSize, geo->VertexBufferUploader);
+    geo->IndexBufferGPU = d3dUtil::CreateDefaultBuffer(md3dDevice.Get(),
+        mCommandList.Get(), indices.data(), ibSize, geo->IndexBufferUploader);
+    geo->VertexByteStride = sizeof(Vertex);
+    geo->VertexBufferByteSize = vbSize;
+    geo->IndexFormat = DXGI_FORMAT_R32_UINT;
+    geo->IndexBufferByteSize = ibSize;
+    SubmeshGeometry sub{};
+    sub.IndexCount = (UINT)indices.size();
+    geo->DrawArgs["stressCube"] = sub;
+
+    MeshGeometry* geoPtr = geo.get();
+    mGeometries[geo->Name] = std::move(geo);
+
+    // A regular grid makes culling easy to inspect visually: all cube centers
+    // lie on one horizontal plane and form straight rows along X and Z.
+    const UINT columns = (UINT)ceilf(sqrtf((float)objectCount));
+    const UINT rows = (objectCount + columns - 1) / columns;
+    const float spacing = 2.0f;
+    const float centerX = -0.6f;
+    const float centerZ = 2.7f;
+    const float planeY = -1.25f;
+    const float firstX = centerX - (columns - 1) * spacing * 0.5f;
+    const float firstZ = centerZ - (rows - 1) * spacing * 0.5f;
+
+    for (UINT i = 0; i < objectCount; ++i)
+    {
+        const UINT column = i % columns;
+        const UINT row = i / columns;
+        const float x = firstX + column * spacing;
+        const float z = firstZ + row * spacing;
+        const float scale = 1.0f;
+
+        auto ri = std::make_unique<RenderItem>();
+        ri->ObjCBIndex = (UINT)mAllRItems.size();
+        ri->Geo = geoPtr;
+        ri->SubMesh = "stressCube";
+        ri->TextureName = mFallbackTexName;
+        ri->NormalMapName = mDefaultNormalName;
+        ri->DisplacementMapName = mDefaultDisplaceName;
+        XMStoreFloat4x4(&ri->World,
+            XMMatrixScaling(scale, scale, scale) *
+            XMMatrixTranslation(x, planeY, z));
+        ri->Mat.Ambient = { 0.08f, 0.08f, 0.08f, 1.f };
+        const float columnGradient = columns > 1 ? (float)column / (columns - 1) : 0.f;
+        const float rowGradient = rows > 1 ? (float)row / (rows - 1) : 0.f;
+        ri->Mat.Diffuse = {
+            0.25f + 0.65f * columnGradient,
+            0.30f + 0.60f * rowGradient,
+            0.85f - 0.45f * columnGradient, 1.f };
+        ri->Mat.Specular = { 0.35f, 0.35f, 0.35f, 24.f };
+        ri->BoundsL = { {0.f, 0.f, 0.f}, {0.325f, 0.325f, 0.325f} };
+        ri->BoundsL.Transform(ri->BoundsW, XMLoadFloat4x4(&ri->World));
+        ri->InSpatialIndex = true;
+
+        mOpaqueRItems.push_back(ri.get());
+        mAllRItems.push_back(std::move(ri));
+    }
+    mStressObjectCount = objectCount;
+}
+
+void PhongApp::BuildSpatialIndex()
+{
+    XMFLOAT3 minimum = { FLT_MAX, FLT_MAX, FLT_MAX };
+    XMFLOAT3 maximum = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
+    bool hasItems = false;
+
+    for (auto* item : mOpaqueRItems)
+    {
+        if (!item->InSpatialIndex) continue;
+        item->BoundsL.Transform(item->BoundsW, XMLoadFloat4x4(&item->World));
+        const auto& b = item->BoundsW;
+        minimum.x = std::min(minimum.x, b.Center.x - b.Extents.x);
+        minimum.y = std::min(minimum.y, b.Center.y - b.Extents.y);
+        minimum.z = std::min(minimum.z, b.Center.z - b.Extents.z);
+        maximum.x = std::max(maximum.x, b.Center.x + b.Extents.x);
+        maximum.y = std::max(maximum.y, b.Center.y + b.Extents.y);
+        maximum.z = std::max(maximum.z, b.Center.z + b.Extents.z);
+        hasItems = true;
+    }
+
+    if (!hasItems) return;
+    mOctreeRoot = std::make_unique<OctreeNode>();
+    mOctreeRoot->Bounds.Center = {
+        (minimum.x + maximum.x) * 0.5f,
+        (minimum.y + maximum.y) * 0.5f,
+        (minimum.z + maximum.z) * 0.5f };
+    float rootExtent = std::max({
+        (maximum.x - minimum.x) * 0.5f,
+        (maximum.y - minimum.y) * 0.5f,
+        (maximum.z - minimum.z) * 0.5f }) + 0.01f;
+    mOctreeRoot->Bounds.Extents = { rootExtent, rootExtent, rootExtent };
+
+    for (auto* item : mOpaqueRItems)
+        if (item->InSpatialIndex)
+            InsertIntoOctree(*mOctreeRoot, item, 0);
+}
+
+void PhongApp::InsertIntoOctree(OctreeNode& node, RenderItem* item, int depth)
+{
+    constexpr int MaxDepth = 7;
+    if (depth >= MaxDepth)
+    {
+        node.Items.push_back(item);
+        return;
+    }
+
+    const auto& b = item->BoundsW;
+    const auto& c = node.Bounds.Center;
+    auto side = [](float minValue, float maxValue, float split) -> int
+    {
+        if (maxValue <= split) return 0;
+        if (minValue >= split) return 1;
+        return -1;
+    };
+    int sx = side(b.Center.x - b.Extents.x, b.Center.x + b.Extents.x, c.x);
+    int sy = side(b.Center.y - b.Extents.y, b.Center.y + b.Extents.y, c.y);
+    int sz = side(b.Center.z - b.Extents.z, b.Center.z + b.Extents.z, c.z);
+    if (sx < 0 || sy < 0 || sz < 0)
+    {
+        node.Items.push_back(item);
+        return;
+    }
+
+    int childIndex = sx | (sy << 1) | (sz << 2);
+    if (!node.Children[childIndex])
+    {
+        auto child = std::make_unique<OctreeNode>();
+        XMFLOAT3 ext = {
+            node.Bounds.Extents.x * 0.5f,
+            node.Bounds.Extents.y * 0.5f,
+            node.Bounds.Extents.z * 0.5f };
+        child->Bounds.Extents = ext;
+        child->Bounds.Center = {
+            c.x + (sx ? ext.x : -ext.x),
+            c.y + (sy ? ext.y : -ext.y),
+            c.z + (sz ? ext.z : -ext.z) };
+        node.Children[childIndex] = std::move(child);
+    }
+    InsertIntoOctree(*node.Children[childIndex], item, depth + 1);
+}
+
+void PhongApp::CollectOctreeItems(const OctreeNode& node,
+                                  std::vector<RenderItem*>& output) const
+{
+    for (auto* item : node.Items)
+        if (item->Visible) output.push_back(item);
+    for (const auto& child : node.Children)
+        if (child) CollectOctreeItems(*child, output);
+}
+
+void PhongApp::QueryOctree(const OctreeNode& node, const BoundingFrustum& frustum,
+                           std::vector<RenderItem*>& output) const
+{
+    ContainmentType nodeResult = frustum.Contains(node.Bounds);
+    if (nodeResult == DISJOINT) return;
+    if (nodeResult == CONTAINS)
+    {
+        CollectOctreeItems(node, output);
+        return;
+    }
+
+    for (auto* item : node.Items)
+        if (item->Visible && frustum.Contains(item->BoundsW) != DISJOINT)
+            output.push_back(item);
+    for (const auto& child : node.Children)
+        if (child) QueryOctree(*child, frustum, output);
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -1145,6 +1438,8 @@ void PhongApp::BuildLightSphereObjects()
         ri->SubMesh     = "sphere";
         ri->TextureName = sphereTexName;
         ri->Visible     = false;
+        ri->DynamicBounds = true;
+        ri->BoundsL = { {0.f, 0.f, 0.f}, {1.f, 1.f, 1.f} };
         ri->Mat.Ambient  = { 0.6f, 0.5f, 0.25f, 1.f };
         ri->Mat.Diffuse  = { 1.0f, 0.85f, 0.35f, 1.f };
         ri->Mat.Specular = { 1.0f, 1.0f, 1.0f, 64.f };
@@ -1424,9 +1719,22 @@ LRESULT PhongApp::MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     if (msg == WM_KEYDOWN)
     {
-        if (wParam == VK_SPACE && ((lParam & (1 << 30)) == 0))
+        const bool firstPress = (lParam & (1 << 30)) == 0;
+        if (wParam == VK_SPACE && firstPress)
         {
             ShootPointLight();
+            return 0;
+        }
+        if (wParam == VK_F1 && firstPress)
+        {
+            mFrustumCullingEnabled = !mFrustumCullingEnabled;
+            mCaptionUpdateTimer = 1.f;
+            return 0;
+        }
+        if (wParam == VK_F2 && firstPress)
+        {
+            mOctreeCullingEnabled = !mOctreeCullingEnabled;
+            mCaptionUpdateTimer = 1.f;
             return 0;
         }
     }

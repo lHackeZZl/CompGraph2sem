@@ -4,6 +4,8 @@
 #include "UploadBuffer.h"
 #include "GeometryGenerator.h"
 #include "RenderingSystem.h"
+#include <DirectXCollision.h>
+#include <array>
 
 using namespace DirectX;
 using Microsoft::WRL::ComPtr;
@@ -86,6 +88,17 @@ struct RenderItem
     float NoiseFrequency = 1.f;
     float NoiseOctaves = 4.f;
     float NoiseSeed = 0.f;
+    DirectX::BoundingBox BoundsL = { {0.f, 0.f, 0.f}, {0.5f, 0.5f, 0.5f} };
+    DirectX::BoundingBox BoundsW = { {0.f, 0.f, 0.f}, {0.5f, 0.5f, 0.5f} };
+    bool DynamicBounds = false;
+    bool InSpatialIndex = false;
+};
+
+struct OctreeNode
+{
+    DirectX::BoundingBox Bounds;
+    std::vector<RenderItem*> Items;
+    std::array<std::unique_ptr<OctreeNode>, 8> Children;
 };
 
 struct FrameResource
@@ -143,6 +156,14 @@ private:
     std::unordered_map<std::string,ObjMaterial> LoadMtl(const std::string& path);
     void BuildDefaultCube();
     void BuildLampMeshes(); // меши абажуров над Point Light 0 и 1
+    void BuildStressTestObjects(UINT objectCount = 2500);
+    void BuildSpatialIndex();
+    void InsertIntoOctree(OctreeNode& node, RenderItem* item, int depth);
+    void QueryOctree(const OctreeNode& node, const DirectX::BoundingFrustum& frustum,
+                     std::vector<RenderItem*>& output) const;
+    void CollectOctreeItems(const OctreeNode& node, std::vector<RenderItem*>& output) const;
+    void UpdateVisibleSet();
+    void UpdateCullingCaption(float deltaTime);
 
     void UpdateObjectCBs(const GameTimer& gt);
     void UpdatePassCB   (const GameTimer& gt);
@@ -202,6 +223,15 @@ private:
     std::unordered_map<std::string, std::unique_ptr<MeshGeometry>> mGeometries;
     std::vector<std::unique_ptr<RenderItem>> mAllRItems;
     std::vector<RenderItem*>                 mOpaqueRItems;
+    std::vector<RenderItem*>                 mVisibleRItems;
+    std::unique_ptr<OctreeNode>              mOctreeRoot;
+
+    bool mFrustumCullingEnabled = true;
+    bool mOctreeCullingEnabled  = true;
+    UINT mStressObjectCount = 0;
+    UINT mVisibleObjectCount = 0;
+    UINT mCulledObjectCount = 0;
+    float mCaptionUpdateTimer = 0.f;
 
     float mTime = 0.f;
 };
