@@ -43,7 +43,7 @@
       <AdditionalDependencies>d3d12.lib;dxgi.lib;d3dcompiler.lib;dxguid.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <PostBuildEvent>
-      <Command>xcopy /Y "$(ProjectDir)phong.hlsl" "$(OutDir)"&#x0D;&#x0A;xcopy /Y "$(ProjectDir)gbuffer.hlsl" "$(OutDir)"&#x0D;&#x0A;xcopy /Y "$(ProjectDir)lighting.hlsl" "$(OutDir)"&#x0D;&#x0A;xcopy /Y "$(ProjectDir)shadow.hlsl" "$(OutDir)"</Command>
+      <Command>xcopy /Y "$(ProjectDir)phong.hlsl" "$(OutDir)"&#x0D;&#x0A;xcopy /Y "$(ProjectDir)gbuffer.hlsl" "$(OutDir)"&#x0D;&#x0A;xcopy /Y "$(ProjectDir)lighting.hlsl" "$(OutDir)"&#x0D;&#x0A;xcopy /Y "$(ProjectDir)shadow.hlsl" "$(OutDir)"&#x0D;&#x0A;xcopy /Y "$(ProjectDir)particles_update.hlsl" "$(OutDir)"&#x0D;&#x0A;xcopy /Y "$(ProjectDir)particles_render.hlsl" "$(OutDir)"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -58,7 +58,7 @@
       <AdditionalDependencies>d3d12.lib;dxgi.lib;d3dcompiler.lib;dxguid.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <PostBuildEvent>
-      <Command>xcopy /Y "$(ProjectDir)phong.hlsl" "$(OutDir)"&#x0D;&#x0A;xcopy /Y "$(ProjectDir)gbuffer.hlsl" "$(OutDir)"&#x0D;&#x0A;xcopy /Y "$(ProjectDir)lighting.hlsl" "$(OutDir)"&#x0D;&#x0A;xcopy /Y "$(ProjectDir)shadow.hlsl" "$(OutDir)"</Command>
+      <Command>xcopy /Y "$(ProjectDir)phong.hlsl" "$(OutDir)"&#x0D;&#x0A;xcopy /Y "$(ProjectDir)gbuffer.hlsl" "$(OutDir)"&#x0D;&#x0A;xcopy /Y "$(ProjectDir)lighting.hlsl" "$(OutDir)"&#x0D;&#x0A;xcopy /Y "$(ProjectDir)shadow.hlsl" "$(OutDir)"&#x0D;&#x0A;xcopy /Y "$(ProjectDir)particles_update.hlsl" "$(OutDir)"&#x0D;&#x0A;xcopy /Y "$(ProjectDir)particles_render.hlsl" "$(OutDir)"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <!-- .cpp files -->
@@ -69,6 +69,7 @@
     <ClCompile Include="d3dApp.cpp" />
     <ClCompile Include="GeometryGenerator.cpp" />
     <ClCompile Include="RenderingSystem.cpp" />
+    <ClCompile Include="ParticleSystem.cpp" />
   </ItemGroup>
   <!-- .h files -->
   <ItemGroup>
@@ -80,6 +81,7 @@
     <ClInclude Include="MathHelper.h" />
     <ClInclude Include="UploadBuffer.h" />
     <ClInclude Include="GeometryGenerator.h" />
+    <ClInclude Include="ParticleSystem.h" />
   </ItemGroup>
   <!-- Shader -->
   <ItemGroup>
@@ -87,6 +89,8 @@
     <None Include="gbuffer.hlsl" />
     <None Include="lighting.hlsl" />
     <None Include="shadow.hlsl" />
+    <None Include="particles_update.hlsl" />
+    <None Include="particles_render.hlsl" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

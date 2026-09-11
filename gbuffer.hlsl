@@ -126,7 +126,7 @@ float3 NoiseGradient(float3 cell)
 }
 
 float PerlinNoise(float3 p)
-{   
+{
     float3 cell = floor(p);
     float3 f = frac(p);
     float3 u = f * f * f * (f * (f * 6.0f - 15.0f) + 10.0f);

@@ -75,6 +75,8 @@ bool PhongApp::Initialize()
     // которыми потом можно стрелять из камеры. Они входят в ObjectCB layout.
     BuildLightSphereObjects();
     BuildSpatialIndex();
+    mParticleSystem.Initialize(
+        md3dDevice.Get(), mCommandList.Get(), mDepthStencilFormat);
 
     BuildFrameResources();
     BuildDescriptorHeaps();         // создаёт mCbvSrvHeap и mGBufferRtvHeap
@@ -490,13 +492,18 @@ void PhongApp::UpdateCascadedShadowData()
 // ════════════════════════════════════════════════════════════════════════════
 // Draw  —  два прохода через RenderingSystem
 // ════════════════════════════════════════════════════════════════════════════
-void PhongApp::Draw(const GameTimer&)
+void PhongApp::Draw(const GameTimer& gt)
 {
     auto alloc = mCurrFrameResource->CmdListAlloc;
     ThrowIfFailed(alloc->Reset());
     ThrowIfFailed(mCommandList->Reset(alloc.Get(), nullptr));
 
     ID3D12DescriptorHeap* heaps[] = { mCbvSrvHeap.Get() };
+    mCommandList->SetDescriptorHeaps(1, heaps);
+
+    // GPU simulation: Consume current particles, update in compute, Append to
+    // the other buffer, then swap the two roles for rendering/next frame.
+    mParticleSystem.Update(mCommandList.Get(), gt.DeltaTime(), mTime);
     mCommandList->SetDescriptorHeaps(1, heaps);
 
     // ── Pass 0: four cascaded directional shadow maps ───────────────────────
@@ -523,6 +530,15 @@ void PhongApp::Draw(const GameTimer&)
     mCommandList->SetGraphicsRootDescriptorTable(1, passH);
 
     DrawRenderItems(mCommandList.Get());
+
+    XMVECTOR particleEye, particleForward, particleRight, particleUp;
+    GetCameraBasis(particleEye, particleForward, particleRight, particleUp);
+    XMMATRIX particleView = XMMatrixLookToLH(
+        particleEye, particleForward, particleUp);
+    mParticleSystem.Render(mCommandList.Get(),
+        particleView * XMLoadFloat4x4(&mProj),
+        particleRight, particleUp, particleForward);
+    mCommandList->SetDescriptorHeaps(1, heaps);
 
     mRenderer.EndGeometryPass(mCommandList.Get());
 
@@ -697,6 +713,7 @@ void PhongApp::UpdateCullingCaption(float deltaTime)
           << L" | Culled: " << mCulledObjectCount
           << L" | Active: " << (mVisibleObjectCount + mCulledObjectCount)
           << L" | Stress cubes: " << mStressObjectCount
+          << L" | Particles: " << ParticleSystem::MaxParticles
           << L" | Frustum: " << mode
           << L" | Shadows: " << (mShadowsEnabled ? L"ON" : L"OFF")
           << L" | F1 culling, F2 octree, F3 shadows";

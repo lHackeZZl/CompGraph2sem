@@ -4,6 +4,7 @@
 #include "UploadBuffer.h"
 #include "GeometryGenerator.h"
 #include "RenderingSystem.h"
+#include "ParticleSystem.h"
 #include <DirectXCollision.h>
 #include <array>
 
@@ -180,6 +181,7 @@ private:
 
     // ── RenderingSystem (deferred) ────────────────────────────────────────────
     RenderingSystem mRenderer;
+    ParticleSystem  mParticleSystem;
     CBLighting      mLightingData{};
     enum { MaxPointLightObjects = 128, StaticPointLightCount = 5 };
     std::vector<LightObject> mLightObjects;
