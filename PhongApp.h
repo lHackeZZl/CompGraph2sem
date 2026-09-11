@@ -164,6 +164,8 @@ private:
     void CollectOctreeItems(const OctreeNode& node, std::vector<RenderItem*>& output) const;
     void UpdateVisibleSet();
     void UpdateCullingCaption(float deltaTime);
+    void UpdateCascadedShadowData();
+    void DrawShadowCasters(ID3D12GraphicsCommandList* cmd, UINT cascadeIndex);
 
     void UpdateObjectCBs(const GameTimer& gt);
     void UpdatePassCB   (const GameTimer& gt);
@@ -179,7 +181,7 @@ private:
     // ── RenderingSystem (deferred) ────────────────────────────────────────────
     RenderingSystem mRenderer;
     CBLighting      mLightingData{};
-    enum { MaxPointLightObjects = 128, StaticPointLightCount = 3 };
+    enum { MaxPointLightObjects = 128, StaticPointLightCount = 5 };
     std::vector<LightObject> mLightObjects;
     std::vector<PointLight>  mPointLights;
     std::vector<RenderItem*> mLightSphereRItems;
@@ -206,6 +208,10 @@ private:
     UINT mPointLightSrvOffset = 0;
     UINT mSrvBaseOffset  = 0;
     UINT mGBufSrvOffset  = 0;
+    UINT mShadowSrvOffset = 0;
+
+    DirectX::XMFLOAT4X4 mCascadeLightViewProj[RenderingSystem::CascadeCount];
+    DirectX::BoundingFrustum mCascadeShadowFrusta[RenderingSystem::CascadeCount];
 
     // ── Textures ──────────────────────────────────────────────────────────────
     std::unordered_map<std::string, ComPtr<ID3D12Resource>> mTextures;
@@ -228,6 +234,7 @@ private:
 
     bool mFrustumCullingEnabled = true;
     bool mOctreeCullingEnabled  = true;
+    bool mShadowsEnabled = true;
     UINT mStressObjectCount = 0;
     UINT mVisibleObjectCount = 0;
     UINT mCulledObjectCount = 0;

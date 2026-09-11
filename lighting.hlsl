@@ -1,4 +1,4 @@
-// lighting.hlsl — Lighting Pass: Phong + Hemisphere Ambient (fake soft shadows)
+// lighting.hlsl — deferred Phong lighting + cascaded directional shadow maps
 // Supports: 1 Directional + StructuredBuffer<PointLight> + 1 Spot light
 
 // ─── Light structures ─────────────────────────────────────────────────────────
@@ -38,6 +38,12 @@ cbuffer CBLighting : register(b0)
     int              gNumPointLights;
     int              gHasSpot;
     float2           gLightPad;
+    float4x4         gShadowTransform[4];
+    float4x4         gCameraView;
+    float4           gCascadeSplits;
+    float2           gShadowTexelSize;
+    float            gShadowBias;
+    float            gShadowsEnabled;
 };
 
 // ─── G-Buffer textures ────────────────────────────────────────────────────────
@@ -45,7 +51,9 @@ Texture2D    gGBufPosition : register(t0);
 Texture2D    gGBufNormal   : register(t1);
 Texture2D    gGBufAlbedo   : register(t2);
 StructuredBuffer<PointLight> gPointLights : register(t3);
+Texture2DArray<float> gShadowMap : register(t4);
 SamplerState gSampler      : register(s0);
+SamplerComparisonState gShadowSampler : register(s1);
 
 // ─── Vertex shader ────────────────────────────────────────────────────────────
 struct QuadVIn  { float3 PosL : POSITION; float2 Tex : TEXCOORD; };
@@ -138,6 +146,48 @@ float4 ComputeSpot(SpotLight L, float3 pos, float3 N, float3 V,
     return (diffuse + specular) * att;
 }
 
+// Select a cascade by positive camera-space depth and apply a 3x3 PCF kernel.
+// Comparison sampling also linearly filters neighbouring depth texels, giving
+// soft, stable edges without manually reading raw depth values.
+float ComputeCascadedShadow(float3 posW, float3 normalW)
+{
+    if (gShadowsEnabled < 0.5f)
+        return 1.0f;
+
+    float viewDepth = mul(float4(posW, 1.0f), gCameraView).z;
+    uint cascade = 0;
+    if (viewDepth > gCascadeSplits.x) cascade = 1;
+    if (viewDepth > gCascadeSplits.y) cascade = 2;
+    if (viewDepth > gCascadeSplits.z) cascade = 3;
+    if (viewDepth > gCascadeSplits.w || viewDepth < 0.0f)
+        return 1.0f;
+
+    float4 shadowPosition = mul(float4(posW, 1.0f), gShadowTransform[cascade]);
+    shadowPosition.xyz /= shadowPosition.w;
+    if (shadowPosition.x <= 0.0f || shadowPosition.x >= 1.0f ||
+        shadowPosition.y <= 0.0f || shadowPosition.y >= 1.0f ||
+        shadowPosition.z <= 0.0f || shadowPosition.z >= 1.0f)
+        return 1.0f;
+
+    float3 lightDirection = normalize(-gDirLight.Direction);
+    float slope = 1.0f - saturate(dot(normalW, lightDirection));
+    float receiverDepth = shadowPosition.z - gShadowBias * (0.35f + slope);
+
+    float visibility = 0.0f;
+    [unroll]
+    for (int y = -1; y <= 1; ++y)
+    {
+        [unroll]
+        for (int x = -1; x <= 1; ++x)
+        {
+            float2 uv = shadowPosition.xy + float2(x, y) * gShadowTexelSize;
+            visibility += gShadowMap.SampleCmpLevelZero(
+                gShadowSampler, float3(uv, (float)cascade), receiverDepth);
+        }
+    }
+    return visibility / 9.0f;
+}
+
 // ─── Pixel shader ─────────────────────────────────────────────────────────────
 float4 PS(QuadVOut pin) : SV_TARGET
 {
@@ -159,8 +209,10 @@ float4 PS(QuadVOut pin) : SV_TARGET
     // ── Directional ambient (базовая подсветка чтобы тени не были чёрными) ────
     color += gDirLight.Ambient * float4(albedo, 1.0f) * 0.35f;
 
-    // ── Directional diffuse + specular ────────────────────────────────────────
-    color += ComputeDirectional(gDirLight, normalW, V, albedo, shininess);
+    // ── Directional diffuse + specular, filtered by 4-cascade PCF shadows ────
+    float directionalShadow = ComputeCascadedShadow(posW, normalW);
+    color += directionalShadow *
+        ComputeDirectional(gDirLight, normalW, V, albedo, shininess);
 
     // ── Point lights ──────────────────────────────────────────────────────────
     for (int i = 0; i < gNumPointLights; ++i)

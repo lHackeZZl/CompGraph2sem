@@ -49,6 +49,12 @@ struct CBLighting
     int  NumPointLights = 0;
     int  HasSpot        = 1;
     DirectX::XMFLOAT2 Pad1;
+    DirectX::XMFLOAT4X4 ShadowTransform[4];
+    DirectX::XMFLOAT4X4 CameraView;
+    DirectX::XMFLOAT4 CascadeSplits;
+    DirectX::XMFLOAT2 ShadowTexelSize = { 1.f / 2048.f, 1.f / 2048.f };
+    float ShadowBias = 0.0012f;
+    float ShadowsEnabled = 1.f;
 };
 
 // ─── RenderingSystem ──────────────────────────────────────────────────────────
@@ -90,11 +96,21 @@ public:
 
     void EndGeometryPass(ID3D12GraphicsCommandList* cmd);
 
+    void BuildShadowView(ID3D12Device* device,
+                         ID3D12DescriptorHeap* srvHeap,
+                         UINT srvIndex,
+                         UINT descriptorSize);
+    void BeginShadowPass(ID3D12GraphicsCommandList* cmd);
+    void BeginShadowCascade(ID3D12GraphicsCommandList* cmd, UINT cascadeIndex,
+                            const DirectX::XMFLOAT4X4& lightViewProj);
+    void EndShadowPass(ID3D12GraphicsCommandList* cmd);
+
     // Lighting pass: полноэкранный квад → back buffer.
     void LightingPass(ID3D12GraphicsCommandList*  cmd,
                       D3D12_CPU_DESCRIPTOR_HANDLE  rtvBackBuffer,
                       D3D12_GPU_DESCRIPTOR_HANDLE  lightingCbvGpu,
                       D3D12_GPU_DESCRIPTOR_HANDLE  pointLightsSrvGpu,
+                      D3D12_GPU_DESCRIPTOR_HANDLE  shadowMapSrvGpu,
                       const D3D12_VIEWPORT&        vp,
                       const D3D12_RECT&            sr);
 
@@ -103,6 +119,8 @@ public:
     ID3D12RootSignature* LightingRS()      const { return mLightingRS.Get(); }
     ID3D12PipelineState* GeometryPSO()     const { return mGeometryPSO.Get(); }
     ID3D12PipelineState* GeometryTessPSO() const { return mGeometryTessPSO.Get(); }
+    ID3D12RootSignature* ShadowRS()        const { return mShadowRS.Get(); }
+    ID3D12PipelineState* ShadowPSO()       const { return mShadowPSO.Get(); }
 
     // Upload buffers для lighting CB (по одному на frame resource)
     UploadBuffer<CBLighting>* LightingCB(int frameIndex)
@@ -121,10 +139,14 @@ public:
 
     GBuffer& GetGBuffer() { return mGBuffer; }
 
+    static constexpr UINT CascadeCount = 4;
+    static constexpr UINT ShadowMapSize = 2048;
+
 private:
     void BuildRootSignatures(ID3D12Device* device);
     void BuildPSOs(ID3D12Device* device, DXGI_FORMAT backFmt, DXGI_FORMAT depthFmt);
     void BuildFullscreenQuad(ID3D12Device* device, ID3D12GraphicsCommandList* cmd);
+    void BuildShadowResources(ID3D12Device* device);
 
     // G-Buffer
     GBuffer mGBuffer;
@@ -140,11 +162,21 @@ private:
     // Root signatures
     ComPtr<ID3D12RootSignature> mGeometryRS;
     ComPtr<ID3D12RootSignature> mLightingRS;
+    ComPtr<ID3D12RootSignature> mShadowRS;
 
     // PSOs
     ComPtr<ID3D12PipelineState> mGeometryPSO;
     ComPtr<ID3D12PipelineState> mGeometryTessPSO;
     ComPtr<ID3D12PipelineState> mLightingPSO;
+    ComPtr<ID3D12PipelineState> mShadowPSO;
+
+    ComPtr<ID3D12Resource> mShadowMap;
+    ComPtr<ID3D12DescriptorHeap> mShadowDsvHeap;
+    D3D12_CPU_DESCRIPTOR_HANDLE mShadowDsv[CascadeCount] = {};
+    D3D12_GPU_DESCRIPTOR_HANDLE mShadowSrvGpu = {};
+    D3D12_RESOURCE_STATES mShadowMapState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    D3D12_VIEWPORT mShadowViewport = {};
+    D3D12_RECT mShadowScissor = {};
 
     // Fullscreen quad geometry
     struct QuadVertex { DirectX::XMFLOAT3 Pos; DirectX::XMFLOAT3 Normal; DirectX::XMFLOAT2 Tex; };
@@ -160,6 +192,7 @@ private:
     ComPtr<ID3DBlob> mGeomVS, mGeomPS;
     ComPtr<ID3DBlob> mGeomTessVS, mGeomHS, mGeomDS;
     ComPtr<ID3DBlob> mLightVS, mLightPS;
+    ComPtr<ID3DBlob> mShadowVS;
 
     // Input layout (shared with geometry pass)
     std::vector<D3D12_INPUT_ELEMENT_DESC> mInputLayout;

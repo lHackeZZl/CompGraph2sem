@@ -86,6 +86,8 @@ bool PhongApp::Initialize()
         mLightCbvOffset, mPointLightSrvOffset, mCbvSrvUavDescriptorSize);
 
     BuildTextureViews();
+    mRenderer.BuildShadowView(md3dDevice.Get(), mCbvSrvHeap.Get(),
+        mShadowSrvOffset, mCbvSrvUavDescriptorSize);
 
     // G-Buffer: создаём RT и SRV (в mCbvSrvHeap начиная с mGBufSrvOffset)
     mRenderer.GetGBuffer().Create(
@@ -115,11 +117,12 @@ void PhongApp::SetupLights()
     mLightObjects.clear();
     mPointLights.clear();
 
-    // Directional — слабый нейтральный
-    mLightingData.DirLight.Direction = { 0.3f, -1.0f, 0.3f };
-    mLightingData.DirLight.Ambient   = { 0.20f, 0.20f, 0.20f, 1.f };
-    mLightingData.DirLight.Diffuse   = { 0.25f, 0.25f, 0.25f, 1.f };
-    mLightingData.DirLight.Specular  = { 0.2f,  0.2f,  0.2f,  1.f };
+    // Strong low-angle sun: this is the CSM shadow-casting key light. The
+    // diagonal direction produces long, clearly readable shadows on the grid.
+    mLightingData.DirLight.Direction = { 0.72f, -1.0f, 0.42f };
+    mLightingData.DirLight.Ambient   = { 0.025f, 0.022f, 0.018f, 1.f };
+    mLightingData.DirLight.Diffuse   = { 2.40f, 1.95f, 1.45f, 1.f };
+    mLightingData.DirLight.Specular  = { 1.20f, 1.05f, 0.85f, 1.f };
 
     auto addStaticPointLight = [&](const PointLight& L)
     {
@@ -135,40 +138,58 @@ void PhongApp::SetupLights()
 
     // Point 0 — оранжево-красный, левая часть потолка
     L.Position    = { -3.0f, 7.5f,  2.7f };
-    L.Range       = 200.f;
-    L.Ambient     = { 0.18f, 0.04f, 0.00f, 1.f };
-    L.Diffuse     = { 1.0f,  0.25f, 0.00f, 1.f };
-    L.Specular    = { 1.0f,  0.30f, 0.00f, 1.f };
-    L.Attenuation = { 1.f, 0.007f, 0.0002f };
+    L.Range       = 16.f;
+    L.Ambient     = { 0.015f, 0.004f, 0.00f, 1.f };
+    L.Diffuse     = { 0.45f,  0.10f, 0.02f, 1.f };
+    L.Specular    = { 0.45f,  0.12f, 0.02f, 1.f };
+    L.Attenuation = { 1.f, 0.09f, 0.025f };
     addStaticPointLight(L);
 
     // Point 1 — синий, правая часть потолка
     L.Position    = {  2.0f, 7.5f,  2.7f };
-    L.Range       = 200.f;
-    L.Ambient     = { 0.00f, 0.03f, 0.18f, 1.f };
-    L.Diffuse     = { 0.00f, 0.30f, 1.0f,  1.f };
-    L.Specular    = { 0.00f, 0.35f, 1.0f,  1.f };
-    L.Attenuation = { 1.f, 0.007f, 0.0002f };
+    L.Range       = 16.f;
+    L.Ambient     = { 0.00f, 0.004f, 0.015f, 1.f };
+    L.Diffuse     = { 0.02f, 0.12f, 0.45f, 1.f };
+    L.Specular    = { 0.02f, 0.14f, 0.45f, 1.f };
+    L.Attenuation = { 1.f, 0.09f, 0.025f };
     addStaticPointLight(L);
 
     // Point 2 — зелёный, центр потолка
     L.Position    = { -0.6f, 7.8f,  2.7f };
-    L.Range       = 200.f;
-    L.Ambient     = { 0.00f, 0.12f, 0.00f, 1.f };
-    L.Diffuse     = { 0.00f, 1.00f, 0.10f, 1.f };
-    L.Specular    = { 0.00f, 1.00f, 0.15f, 1.f };
-    L.Attenuation = { 1.f, 0.005f, 0.0001f };
+    L.Range       = 14.f;
+    L.Ambient     = { 0.00f, 0.012f, 0.00f, 1.f };
+    L.Diffuse     = { 0.03f, 0.35f, 0.05f, 1.f };
+    L.Specular    = { 0.03f, 0.35f, 0.05f, 1.f };
+    L.Attenuation = { 1.f, 0.10f, 0.030f };
+    addStaticPointLight(L);
+
+    // Two restrained side fills make the light setup visible across the test
+    // grid without washing out the directional CSM shadow contrast.
+    L.Position    = { -12.0f, 5.5f, 15.0f };
+    L.Range       = 22.f;
+    L.Ambient     = { 0.006f, 0.003f, 0.001f, 1.f };
+    L.Diffuse     = { 0.24f, 0.10f, 0.035f, 1.f };
+    L.Specular    = { 0.24f, 0.10f, 0.035f, 1.f };
+    L.Attenuation = { 1.f, 0.11f, 0.035f };
+    addStaticPointLight(L);
+
+    L.Position    = { 12.0f, 5.5f, 15.0f };
+    L.Range       = 22.f;
+    L.Ambient     = { 0.001f, 0.003f, 0.006f, 1.f };
+    L.Diffuse     = { 0.035f, 0.11f, 0.25f, 1.f };
+    L.Specular    = { 0.035f, 0.11f, 0.25f, 1.f };
+    L.Attenuation = { 1.f, 0.11f, 0.035f };
     addStaticPointLight(L);
 
     // Spot — пурпурный, направлен вниз над центром стола
     mLightingData.Spot.Position    = { -0.6f, 7.5f,  2.7f };
-    mLightingData.Spot.Range       = 200.f;
+    mLightingData.Spot.Range       = 18.f;
     mLightingData.Spot.Direction   = {  0.0f,-1.0f,  0.0f };
     mLightingData.Spot.SpotPower   = 4.f;   // широкий конус — вся комната
-    mLightingData.Spot.Ambient     = { 0.08f, 0.00f, 0.08f, 1.f };
-    mLightingData.Spot.Diffuse     = { 1.00f, 0.00f, 1.00f, 1.f };
-    mLightingData.Spot.Specular    = { 1.00f, 0.10f, 1.00f, 1.f };
-    mLightingData.Spot.Attenuation = { 1.f, 0.007f, 0.0002f };
+    mLightingData.Spot.Ambient     = { 0.008f, 0.00f, 0.008f, 1.f };
+    mLightingData.Spot.Diffuse     = { 0.28f, 0.02f, 0.28f, 1.f };
+    mLightingData.Spot.Specular    = { 0.30f, 0.03f, 0.30f, 1.f };
+    mLightingData.Spot.Attenuation = { 1.f, 0.09f, 0.025f };
 
     mLightingData.NumPointLights = (int)mPointLights.size();
     mLightingData.HasSpot        = 1;
@@ -186,7 +207,8 @@ void PhongApp::BuildDescriptorHeaps()
     mLightCbvOffset = mPassCbvOffset + 3;
     mPointLightSrvOffset = mLightCbvOffset + 3;
     mSrvBaseOffset  = mPointLightSrvOffset + 3;
-    mGBufSrvOffset  = mSrvBaseOffset + texN;
+    mShadowSrvOffset = mSrvBaseOffset + texN;
+    mGBufSrvOffset  = mShadowSrvOffset + 1;
 
     UINT total = mGBufSrvOffset + kGBufferCount;
 
@@ -351,6 +373,118 @@ void PhongApp::UpdatePassCB(const GameTimer&)
 
     XMStoreFloat3(&mLightingData.EyePosW, eye);
     mLightingData.NumPointLights = (int)mPointLights.size();
+    UpdateCascadedShadowData();
+}
+
+void PhongApp::UpdateCascadedShadowData()
+{
+    constexpr float cameraNear = 1.0f;
+    constexpr float shadowDistance = 220.0f;
+    constexpr float splitLambda = 0.75f;
+    constexpr float fovY = 0.25f * XM_PI;
+
+    float splits[RenderingSystem::CascadeCount] = {};
+    for (UINT i = 0; i < RenderingSystem::CascadeCount; ++i)
+    {
+        float p = (float)(i + 1) / (float)RenderingSystem::CascadeCount;
+        float logarithmic = cameraNear * powf(shadowDistance / cameraNear, p);
+        float uniform = cameraNear + (shadowDistance - cameraNear) * p;
+        splits[i] = splitLambda * logarithmic + (1.f - splitLambda) * uniform;
+    }
+
+    XMVECTOR eye, forward, right, up;
+    GetCameraBasis(eye, forward, right, up);
+    XMMATRIX cameraView = XMMatrixLookToLH(eye, forward, up);
+    XMStoreFloat4x4(&mLightingData.CameraView, XMMatrixTranspose(cameraView));
+    mLightingData.CascadeSplits = { splits[0], splits[1], splits[2], splits[3] };
+    mLightingData.ShadowTexelSize = {
+        1.f / RenderingSystem::ShadowMapSize,
+        1.f / RenderingSystem::ShadowMapSize };
+    mLightingData.ShadowBias = 0.0014f;
+    mLightingData.ShadowsEnabled = mShadowsEnabled ? 1.f : 0.f;
+
+    XMVECTOR lightDirection = XMVector3Normalize(
+        XMLoadFloat3(&mLightingData.DirLight.Direction));
+    XMVECTOR worldY = XMVectorSet(0.f, 1.f, 0.f, 0.f);
+    XMVECTOR worldZ = XMVectorSet(0.f, 0.f, 1.f, 0.f);
+    XMVECTOR lightUp = fabsf(XMVectorGetX(XMVector3Dot(lightDirection, worldY))) > 0.9f
+        ? worldZ : worldY;
+
+    const float tanHalfFovY = tanf(fovY * 0.5f);
+    const float tanHalfFovX = tanHalfFovY * AspectRatio();
+    const XMMATRIX textureTransform = XMMatrixSet(
+        0.5f,  0.f, 0.f, 0.f,
+        0.f, -0.5f, 0.f, 0.f,
+        0.f,  0.f, 1.f, 0.f,
+        0.5f, 0.5f, 0.f, 1.f);
+
+    float cascadeNear = cameraNear;
+    for (UINT cascade = 0; cascade < RenderingSystem::CascadeCount; ++cascade)
+    {
+        float cascadeFar = splits[cascade];
+        XMVECTOR corners[8];
+        UINT cornerIndex = 0;
+        for (int plane = 0; plane < 2; ++plane)
+        {
+            float distance = plane == 0 ? cascadeNear : cascadeFar;
+            XMVECTOR planeCenter = eye + forward * distance;
+            float halfWidth = distance * tanHalfFovX;
+            float halfHeight = distance * tanHalfFovY;
+            for (int ySign = -1; ySign <= 1; ySign += 2)
+                for (int xSign = -1; xSign <= 1; xSign += 2)
+                    corners[cornerIndex++] = planeCenter
+                        + right * (halfWidth * (float)xSign)
+                        + up * (halfHeight * (float)ySign);
+        }
+
+        XMVECTOR center = XMVectorZero();
+        for (XMVECTOR corner : corners) center += corner;
+        center /= 8.f;
+
+        XMVECTOR lightPosition = center - lightDirection * 260.f;
+        XMMATRIX lightView = XMMatrixLookAtLH(lightPosition, center, lightUp);
+        XMFLOAT3 minimum = { FLT_MAX, FLT_MAX, FLT_MAX };
+        XMFLOAT3 maximum = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
+        for (XMVECTOR corner : corners)
+        {
+            XMFLOAT3 lightSpace;
+            XMStoreFloat3(&lightSpace, XMVector3TransformCoord(corner, lightView));
+            minimum.x = std::min(minimum.x, lightSpace.x);
+            minimum.y = std::min(minimum.y, lightSpace.y);
+            minimum.z = std::min(minimum.z, lightSpace.z);
+            maximum.x = std::max(maximum.x, lightSpace.x);
+            maximum.y = std::max(maximum.y, lightSpace.y);
+            maximum.z = std::max(maximum.z, lightSpace.z);
+        }
+
+        // Include off-frustum casters along the light direction and snap the
+        // orthographic bounds to shadow texels to prevent shimmering.
+        minimum.x -= 3.f; minimum.y -= 3.f;
+        maximum.x += 3.f; maximum.y += 3.f;
+        float worldUnitsPerTexel = (maximum.x - minimum.x) /
+            (float)RenderingSystem::ShadowMapSize;
+        minimum.x = floorf(minimum.x / worldUnitsPerTexel) * worldUnitsPerTexel;
+        minimum.y = floorf(minimum.y / worldUnitsPerTexel) * worldUnitsPerTexel;
+        maximum.x = floorf(maximum.x / worldUnitsPerTexel) * worldUnitsPerTexel;
+        maximum.y = floorf(maximum.y / worldUnitsPerTexel) * worldUnitsPerTexel;
+
+        float nearZ = std::max(0.1f, minimum.z - 120.f);
+        float farZ = maximum.z + 120.f;
+        XMMATRIX lightProjection = XMMatrixOrthographicOffCenterLH(
+            minimum.x, maximum.x, minimum.y, maximum.y, nearZ, farZ);
+        XMMATRIX lightViewProjection = lightView * lightProjection;
+
+        BoundingFrustum lightSpaceFrustum;
+        BoundingFrustum::CreateFromMatrix(lightSpaceFrustum, lightProjection);
+        lightSpaceFrustum.Transform(mCascadeShadowFrusta[cascade],
+            XMMatrixInverse(nullptr, lightView));
+
+        XMStoreFloat4x4(&mCascadeLightViewProj[cascade],
+            XMMatrixTranspose(lightViewProjection));
+        XMStoreFloat4x4(&mLightingData.ShadowTransform[cascade],
+            XMMatrixTranspose(lightViewProjection * textureTransform));
+        cascadeNear = cascadeFar;
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -364,6 +498,19 @@ void PhongApp::Draw(const GameTimer&)
 
     ID3D12DescriptorHeap* heaps[] = { mCbvSrvHeap.Get() };
     mCommandList->SetDescriptorHeaps(1, heaps);
+
+    // ── Pass 0: four cascaded directional shadow maps ───────────────────────
+    if (mShadowsEnabled)
+    {
+        mRenderer.BeginShadowPass(mCommandList.Get());
+        for (UINT cascade = 0; cascade < RenderingSystem::CascadeCount; ++cascade)
+        {
+            mRenderer.BeginShadowCascade(
+                mCommandList.Get(), cascade, mCascadeLightViewProj[cascade]);
+            DrawShadowCasters(mCommandList.Get(), cascade);
+        }
+        mRenderer.EndShadowPass(mCommandList.Get());
+    }
 
     // ── Pass 1: Geometry → G-Buffer ───────────────────────────────────────────
     mRenderer.BeginGeometryPass(
@@ -391,10 +538,14 @@ void PhongApp::Draw(const GameTimer&)
     auto pointLightsH = mRenderer.PointLightsSrvGpuHandle(
         mCbvSrvHeap.Get(), mCurrFrameResourceIndex, mCbvSrvUavDescriptorSize);
 
+    auto shadowMapH = CD3DX12_GPU_HANDLE(
+        mCbvSrvHeap->GetGPUDescriptorHandleForHeapStart(),
+        mShadowSrvOffset, mCbvSrvUavDescriptorSize);
+
     mRenderer.LightingPass(
         mCommandList.Get(),
         CurrentBackBufferView(),
-        lightH, pointLightsH,
+        lightH, pointLightsH, shadowMapH,
         mScreenViewport, mScissorRect);
 
     auto b2 = CD3DX12_RESOURCE_BARRIER_TRANSITION(CurrentBackBuffer(),
@@ -454,6 +605,34 @@ void PhongApp::DrawRenderItems(ID3D12GraphicsCommandList* cmd)
         auto& sub = ri->Geo->DrawArgs[ri->SubMesh];
         cmd->DrawIndexedInstanced(sub.IndexCount, 1,
             sub.StartIndexLocation, sub.BaseVertexLocation, 0);
+    }
+}
+
+void PhongApp::DrawShadowCasters(ID3D12GraphicsCommandList* cmd, UINT cascadeIndex)
+{
+    const UINT objectCount = (UINT)mAllRItems.size();
+    const BoundingFrustum& cascadeFrustum = mCascadeShadowFrusta[cascadeIndex];
+    for (auto* item : mOpaqueRItems)
+    {
+        if (!item->Visible || !item->Geo) continue;
+        if (cascadeFrustum.Contains(item->BoundsW) == DISJOINT) continue;
+
+        auto objectCbv = CD3DX12_GPU_HANDLE(
+            mCbvSrvHeap->GetGPUDescriptorHandleForHeapStart(),
+            mCurrFrameResourceIndex * objectCount + item->ObjCBIndex,
+            mCbvSrvUavDescriptorSize);
+        cmd->SetGraphicsRootDescriptorTable(0, objectCbv);
+
+        auto vbv = item->Geo->VertexBufferView();
+        auto ibv = item->Geo->IndexBufferView();
+        cmd->IASetVertexBuffers(0, 1, &vbv);
+        cmd->IASetIndexBuffer(&ibv);
+        // OBJ and tessellated render items are both backed by triangle indices;
+        // the shadow pass intentionally uses their undisplaced base silhouette.
+        cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        const auto& submesh = item->Geo->DrawArgs[item->SubMesh];
+        cmd->DrawIndexedInstanced(submesh.IndexCount, 1,
+            submesh.StartIndexLocation, submesh.BaseVertexLocation, 0);
     }
 }
 
@@ -519,7 +698,8 @@ void PhongApp::UpdateCullingCaption(float deltaTime)
           << L" | Active: " << (mVisibleObjectCount + mCulledObjectCount)
           << L" | Stress cubes: " << mStressObjectCount
           << L" | Frustum: " << mode
-          << L" | F1 culling, F2 octree";
+          << L" | Shadows: " << (mShadowsEnabled ? L"ON" : L"OFF")
+          << L" | F1 culling, F2 octree, F3 shadows";
     SetWindowTextW(mhMainWnd, title.str().c_str());
 }
 
@@ -1209,6 +1389,30 @@ void PhongApp::BuildStressTestObjects(UINT objectCount)
     const float firstX = centerX - (columns - 1) * spacing * 0.5f;
     const float firstZ = centerZ - (rows - 1) * spacing * 0.5f;
 
+    // A large matte receiver under the complete grid makes every cube shadow
+    // visible, including objects located outside the breakfast-room floor.
+    const std::string groundTexture = "__shadow_receiver__";
+    CreateSolidTexture(groundTexture, PackRGBA(185, 185, 178, 255));
+    {
+        auto ground = std::make_unique<RenderItem>();
+        ground->ObjCBIndex = (UINT)mAllRItems.size();
+        ground->Geo = geoPtr;
+        ground->SubMesh = "stressCube";
+        ground->TextureName = groundTexture;
+        ground->NormalMapName = mDefaultNormalName;
+        ground->DisplacementMapName = mDefaultDisplaceName;
+        XMStoreFloat4x4(&ground->World,
+            XMMatrixScaling(170.f, 0.12f, 170.f) *
+            XMMatrixTranslation(centerX, planeY - 0.40f, centerZ));
+        ground->Mat.Ambient = { 0.04f, 0.04f, 0.04f, 1.f };
+        ground->Mat.Diffuse = { 0.72f, 0.72f, 0.68f, 1.f };
+        ground->Mat.Specular = { 0.05f, 0.05f, 0.05f, 8.f };
+        ground->BoundsL = { {0.f, 0.f, 0.f}, {0.325f, 0.325f, 0.325f} };
+        ground->BoundsL.Transform(ground->BoundsW, XMLoadFloat4x4(&ground->World));
+        mOpaqueRItems.push_back(ground.get());
+        mAllRItems.push_back(std::move(ground));
+    }
+
     for (UINT i = 0; i < objectCount; ++i)
     {
         const UINT column = i % columns;
@@ -1734,6 +1938,12 @@ LRESULT PhongApp::MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         if (wParam == VK_F2 && firstPress)
         {
             mOctreeCullingEnabled = !mOctreeCullingEnabled;
+            mCaptionUpdateTimer = 1.f;
+            return 0;
+        }
+        if (wParam == VK_F3 && firstPress)
+        {
+            mShadowsEnabled = !mShadowsEnabled;
             mCaptionUpdateTimer = 1.f;
             return 0;
         }
