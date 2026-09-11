@@ -55,6 +55,10 @@ struct CBLighting
     DirectX::XMFLOAT2 ShadowTexelSize = { 1.f / 2048.f, 1.f / 2048.f };
     float ShadowBias = 0.0012f;
     float ShadowsEnabled = 1.f;
+    float OutlineEnabled = 1.f;
+    float FogEnabled = 1.f;
+    float FogStart = 35.f;
+    float FogEnd = 145.f;
 };
 
 // ─── RenderingSystem ──────────────────────────────────────────────────────────
@@ -145,7 +149,6 @@ public:
 private:
     void BuildRootSignatures(ID3D12Device* device);
     void BuildPSOs(ID3D12Device* device, DXGI_FORMAT backFmt, DXGI_FORMAT depthFmt);
-    void BuildFullscreenQuad(ID3D12Device* device, ID3D12GraphicsCommandList* cmd);
     void BuildShadowResources(ID3D12Device* device);
 
     // G-Buffer
@@ -177,11 +180,6 @@ private:
     D3D12_RESOURCE_STATES mShadowMapState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
     D3D12_VIEWPORT mShadowViewport = {};
     D3D12_RECT mShadowScissor = {};
-
-    // Fullscreen quad geometry
-    struct QuadVertex { DirectX::XMFLOAT3 Pos; DirectX::XMFLOAT3 Normal; DirectX::XMFLOAT2 Tex; };
-    ComPtr<ID3D12Resource> mQuadVB, mQuadIB;
-    ComPtr<ID3D12Resource> mQuadVBUpload, mQuadIBUpload;
 
     // Lighting upload buffers (one per frame resource)
     static const UINT MaxPointLights = 128;

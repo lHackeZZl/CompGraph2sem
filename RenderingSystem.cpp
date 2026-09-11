@@ -28,7 +28,6 @@ void RenderingSystem::Initialize(ID3D12Device*              device,
     BuildShadowResources(device);
     BuildRootSignatures(device);
     BuildPSOs(device, backBufferFmt, depthFmt);
-    BuildFullscreenQuad(device, cmdList);
 }
 
 // ─── OnResize ─────────────────────────────────────────────────────────────────
@@ -376,7 +375,9 @@ void RenderingSystem::BuildPSOs(ID3D12Device* device,
     // ── Lighting PSO (fullscreen quad, no depth) ───────────────────────────
     {
         D3D12_GRAPHICS_PIPELINE_STATE_DESC d = {};
-        d.InputLayout    = { mInputLayout.data(), (UINT)mInputLayout.size() };
+        // Full-screen geometry is generated from SV_VertexID: no input layout,
+        // vertex buffer or index buffer is needed for the lighting/post pass.
+        d.InputLayout    = { nullptr, 0 };
         d.pRootSignature = mLightingRS.Get();
         d.VS = { mLightVS->GetBufferPointer(), mLightVS->GetBufferSize() };
         d.PS = { mLightPS->GetBufferPointer(), mLightPS->GetBufferSize() };
@@ -420,77 +421,6 @@ void RenderingSystem::BuildPSOs(ID3D12Device* device,
         d.SampleDesc.Count = 1;
         ThrowIfFailed(device->CreateGraphicsPipelineState(
             &d, IID_PPV_ARGS(&mShadowPSO)));
-    }
-}
-
-// ─── Fullscreen Quad ──────────────────────────────────────────────────────────
-void RenderingSystem::BuildFullscreenQuad(ID3D12Device*              device,
-                                          ID3D12GraphicsCommandList* cmd)
-{
-    // NDC quad covering entire screen
-    QuadVertex verts[4] = {
-        { {-1.f,  1.f, 0.f}, {0,0,0}, {0.f, 0.f} },
-        { { 1.f,  1.f, 0.f}, {0,0,0}, {1.f, 0.f} },
-        { {-1.f, -1.f, 0.f}, {0,0,0}, {0.f, 1.f} },
-        { { 1.f, -1.f, 0.f}, {0,0,0}, {1.f, 1.f} },
-    };
-    uint32_t idx[6] = { 0,1,2, 1,3,2 };
-
-    UINT64 vbSz = sizeof(verts);
-    UINT64 ibSz = sizeof(idx);
-
-    auto defHeap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
-    auto uplHeap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
-
-    // VB
-    {
-        auto desc = CD3DX12_RESOURCE_DESC_BUFFER(vbSz);
-        ThrowIfFailed(device->CreateCommittedResource(
-            &defHeap, D3D12_HEAP_FLAG_NONE, &desc,
-            D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&mQuadVB)));
-        ThrowIfFailed(device->CreateCommittedResource(
-            &uplHeap, D3D12_HEAP_FLAG_NONE, &desc,
-            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&mQuadVBUpload)));
-
-        BYTE* p = nullptr;
-        mQuadVBUpload->Map(0, nullptr, (void**)&p);
-        memcpy(p, verts, (size_t)vbSz);
-        mQuadVBUpload->Unmap(0, nullptr);
-
-        auto b1 = CD3DX12_RESOURCE_BARRIER_TRANSITION(
-            mQuadVB.Get(), D3D12_RESOURCE_STATE_COMMON,
-            D3D12_RESOURCE_STATE_COPY_DEST);
-        cmd->ResourceBarrier(1, &b1);
-        cmd->CopyBufferRegion(mQuadVB.Get(), 0, mQuadVBUpload.Get(), 0, vbSz);
-        auto b2 = CD3DX12_RESOURCE_BARRIER_TRANSITION(
-            mQuadVB.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
-            D3D12_RESOURCE_STATE_GENERIC_READ);
-        cmd->ResourceBarrier(1, &b2);
-    }
-    // IB
-    {
-        auto desc = CD3DX12_RESOURCE_DESC_BUFFER(ibSz);
-        ThrowIfFailed(device->CreateCommittedResource(
-            &defHeap, D3D12_HEAP_FLAG_NONE, &desc,
-            D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&mQuadIB)));
-        ThrowIfFailed(device->CreateCommittedResource(
-            &uplHeap, D3D12_HEAP_FLAG_NONE, &desc,
-            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&mQuadIBUpload)));
-
-        BYTE* p = nullptr;
-        mQuadIBUpload->Map(0, nullptr, (void**)&p);
-        memcpy(p, idx, (size_t)ibSz);
-        mQuadIBUpload->Unmap(0, nullptr);
-
-        auto b1 = CD3DX12_RESOURCE_BARRIER_TRANSITION(
-            mQuadIB.Get(), D3D12_RESOURCE_STATE_COMMON,
-            D3D12_RESOURCE_STATE_COPY_DEST);
-        cmd->ResourceBarrier(1, &b1);
-        cmd->CopyBufferRegion(mQuadIB.Get(), 0, mQuadIBUpload.Get(), 0, ibSz);
-        auto b2 = CD3DX12_RESOURCE_BARRIER_TRANSITION(
-            mQuadIB.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
-            D3D12_RESOURCE_STATE_GENERIC_READ);
-        cmd->ResourceBarrier(1, &b2);
     }
 }
 
@@ -573,19 +503,9 @@ void RenderingSystem::LightingPass(ID3D12GraphicsCommandList*  cmd,
     // slot 3 — four-slice cascaded shadow map
     cmd->SetGraphicsRootDescriptorTable(3, shadowMapSrvGpu);
 
-    // Fullscreen quad
-    D3D12_VERTEX_BUFFER_VIEW vbv = {};
-    vbv.BufferLocation = mQuadVB->GetGPUVirtualAddress();
-    vbv.SizeInBytes    = sizeof(QuadVertex) * 4;
-    vbv.StrideInBytes  = sizeof(QuadVertex);
-
-    D3D12_INDEX_BUFFER_VIEW ibv = {};
-    ibv.BufferLocation = mQuadIB->GetGPUVirtualAddress();
-    ibv.SizeInBytes    = sizeof(uint32_t) * 6;
-    ibv.Format         = DXGI_FORMAT_R32_UINT;
-
-    cmd->IASetVertexBuffers(0, 1, &vbv);
-    cmd->IASetIndexBuffer(&ibv);
+    // Six vertices are synthesized in VS from SV_VertexID (two triangles).
+    cmd->IASetVertexBuffers(0, 0, nullptr);
+    cmd->IASetIndexBuffer(nullptr);
     cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    cmd->DrawIndexedInstanced(6, 1, 0, 0, 0);
+    cmd->DrawInstanced(6, 1, 0, 0);
 }

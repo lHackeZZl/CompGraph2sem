@@ -237,6 +237,8 @@ private:
     bool mFrustumCullingEnabled = true;
     bool mOctreeCullingEnabled  = true;
     bool mShadowsEnabled = true;
+    bool mOutlineEnabled = true;
+    bool mFogEnabled = true;
     UINT mStressObjectCount = 0;
     UINT mVisibleObjectCount = 0;
     UINT mCulledObjectCount = 0;

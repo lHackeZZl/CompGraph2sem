@@ -44,6 +44,10 @@ cbuffer CBLighting : register(b0)
     float2           gShadowTexelSize;
     float            gShadowBias;
     float            gShadowsEnabled;
+    float            gOutlineEnabled;
+    float            gFogEnabled;
+    float            gFogStart;
+    float            gFogEnd;
 };
 
 // ─── G-Buffer textures ────────────────────────────────────────────────────────
@@ -56,14 +60,23 @@ SamplerState gSampler      : register(s0);
 SamplerComparisonState gShadowSampler : register(s1);
 
 // ─── Vertex shader ────────────────────────────────────────────────────────────
-struct QuadVIn  { float3 PosL : POSITION; float2 Tex : TEXCOORD; };
 struct QuadVOut { float4 PosH : SV_POSITION; float2 Tex : TEXCOORD; };
 
-QuadVOut VS(QuadVIn vin)
+QuadVOut VS(uint vertexId : SV_VertexID)
 {
+    // Two full-screen triangles generated entirely in the vertex shader.
+    // No vertex/index buffers and no input layout are used by this pass.
+    const float2 positions[6] = {
+        float2(-1.0f,  1.0f), float2( 1.0f,  1.0f), float2(-1.0f, -1.0f),
+        float2( 1.0f,  1.0f), float2( 1.0f, -1.0f), float2(-1.0f, -1.0f)
+    };
+    const float2 texCoords[6] = {
+        float2(0.0f, 0.0f), float2(1.0f, 0.0f), float2(0.0f, 1.0f),
+        float2(1.0f, 0.0f), float2(1.0f, 1.0f), float2(0.0f, 1.0f)
+    };
     QuadVOut vout;
-    vout.PosH = float4(vin.PosL, 1.0f);
-    vout.Tex  = vin.Tex;
+    vout.PosH = float4(positions[vertexId], 0.0f, 1.0f);
+    vout.Tex  = texCoords[vertexId];
     return vout;
 }
 
@@ -188,6 +201,49 @@ float ComputeCascadedShadow(float3 posW, float3 normalW)
     return visibility / 9.0f;
 }
 
+// Post effect 1: screen-space outlines from position and normal discontinuities
+// in the G-buffer. Four taps are sufficient for a clear technical outline.
+float ComputeGBufferOutline(float2 uv, float3 centerPosition, float3 centerNormal)
+{
+    if (gOutlineEnabled < 0.5f)
+        return 0.0f;
+
+    uint width, height;
+    gGBufPosition.GetDimensions(width, height);
+    float2 texel = 1.0f / float2(width, height);
+    const float2 offsets[4] = {
+        float2(1, 0), float2(-1, 0), float2(0, 1), float2(0, -1)
+    };
+
+    float edge = 0.0f;
+    [unroll]
+    for (uint i = 0; i < 4; ++i)
+    {
+        float2 sampleUv = uv + offsets[i] * texel;
+        float3 neighbourPosition = gGBufPosition.SampleLevel(gSampler, sampleUv, 0).xyz;
+        float3 neighbourNormal = gGBufNormal.SampleLevel(gSampler, sampleUv, 0).xyz;
+        float positionEdge = saturate(length(neighbourPosition - centerPosition) * 0.22f);
+        float normalLengthSq = dot(neighbourNormal, neighbourNormal);
+        float normalEdge = normalLengthSq < 0.01f
+            ? 1.0f
+            : 1.0f - saturate(dot(centerNormal, neighbourNormal * rsqrt(normalLengthSq)));
+        edge = max(edge, max(positionEdge, normalEdge));
+    }
+    return smoothstep(0.10f, 0.42f, edge);
+}
+
+// Post effect 2: distance fog uses world position from the G-buffer, so no
+// depth reconstruction or extra depth texture is required.
+float3 ApplyDistanceFog(float3 color, float3 positionW)
+{
+    if (gFogEnabled < 0.5f)
+        return color;
+    float distanceToCamera = distance(positionW, gEyePosW);
+    float fogAmount = smoothstep(gFogStart, gFogEnd, distanceToCamera);
+    float3 fogColor = float3(0.16f, 0.19f, 0.23f);
+    return lerp(color, fogColor, fogAmount * 0.88f);
+}
+
 // ─── Pixel shader ─────────────────────────────────────────────────────────────
 float4 PS(QuadVOut pin) : SV_TARGET
 {
@@ -224,6 +280,9 @@ float4 PS(QuadVOut pin) : SV_TARGET
 
     // ── Reinhard tone mapping ─────────────────────────────────────────────────
     color.rgb = color.rgb / (color.rgb + float3(1.0f, 1.0f, 1.0f));
+    float outline = ComputeGBufferOutline(pin.Tex, posW, normalW);
+    color.rgb *= lerp(1.0f, 0.08f, outline);
+    color.rgb = ApplyDistanceFog(color.rgb, posW);
     color.a   = 1.0f;
     return color;
 }

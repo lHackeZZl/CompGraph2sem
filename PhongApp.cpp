@@ -404,6 +404,10 @@ void PhongApp::UpdateCascadedShadowData()
         1.f / RenderingSystem::ShadowMapSize };
     mLightingData.ShadowBias = 0.0014f;
     mLightingData.ShadowsEnabled = mShadowsEnabled ? 1.f : 0.f;
+    mLightingData.OutlineEnabled = mOutlineEnabled ? 1.f : 0.f;
+    mLightingData.FogEnabled = mFogEnabled ? 1.f : 0.f;
+    mLightingData.FogStart = 35.f;
+    mLightingData.FogEnd = 145.f;
 
     XMVECTOR lightDirection = XMVector3Normalize(
         XMLoadFloat3(&mLightingData.DirLight.Direction));
@@ -716,7 +720,9 @@ void PhongApp::UpdateCullingCaption(float deltaTime)
           << L" | Particles: " << ParticleSystem::MaxParticles
           << L" | Frustum: " << mode
           << L" | Shadows: " << (mShadowsEnabled ? L"ON" : L"OFF")
-          << L" | F1 culling, F2 octree, F3 shadows";
+          << L" | Outline: " << (mOutlineEnabled ? L"ON" : L"OFF")
+          << L" | Fog: " << (mFogEnabled ? L"ON" : L"OFF")
+          << L" | F1 cull F2 octree F3 shadow F4 outline F5 fog";
     SetWindowTextW(mhMainWnd, title.str().c_str());
 }
 
@@ -1961,6 +1967,18 @@ LRESULT PhongApp::MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         if (wParam == VK_F3 && firstPress)
         {
             mShadowsEnabled = !mShadowsEnabled;
+            mCaptionUpdateTimer = 1.f;
+            return 0;
+        }
+        if (wParam == VK_F4 && firstPress)
+        {
+            mOutlineEnabled = !mOutlineEnabled;
+            mCaptionUpdateTimer = 1.f;
+            return 0;
+        }
+        if (wParam == VK_F5 && firstPress)
+        {
+            mFogEnabled = !mFogEnabled;
             mCaptionUpdateTimer = 1.f;
             return 0;
         }

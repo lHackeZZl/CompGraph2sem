@@ -91,6 +91,7 @@
     <None Include="shadow.hlsl" />
     <None Include="particles_update.hlsl" />
     <None Include="particles_render.hlsl" />
+    <None Include="PROJECT_FEATURES_GUIDE.md" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>
